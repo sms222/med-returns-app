@@ -10,6 +10,13 @@ if (!url || !anonKey) {
   )
 }
 
+const boundLocalStorage = {
+  getItem: (key) => window.localStorage.getItem(key),
+  setItem: (key, value) => window.localStorage.setItem(key, value),
+  removeItem: (key) => window.localStorage.removeItem(key),
+}
+
 export const supabase = createClient(url ?? '', anonKey ?? '', {
   global: { fetch: (...args) => fetch(...args) },
+  auth: { storage: boundLocalStorage, persistSession: true, autoRefreshToken: true },
 })
