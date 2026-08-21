@@ -59,6 +59,10 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   const [deletedRowIds, setDeletedRowIds] = useState([])
   const [assistMode, setAssistMode] = useState(false)
   const [pending, setPending] = useState(null) // { rowIndex, field, question } while assistant is waiting for an answer
+  const [hospitals, setHospitals] = useState([])
+  const [bins, setBins] = useState([])
+  const [hospitalId, setHospitalId] = useState('')
+  const [binId, setBinId] = useState('')
 
   const mediaRecorder = useRef(null)
   const chunks = useRef([])
@@ -66,7 +70,22 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
 
   useEffect(() => {
     fetchKnownDrugNames().then(names => { knownDrugsRef.current = names })
+    supabase.from('hospitals').select('*').order('name').then(({ data }) => setHospitals(data ?? []))
   }, [])
+
+  // Default to the staff member's own hospital/bin for a brand new bag.
+  useEffect(() => {
+    if (!bagId && profile) {
+      setHospitalId(profile.hospital_id)
+      setBinId(profile.bin_id)
+    }
+  }, [bagId, profile])
+
+  useEffect(() => {
+    if (!hospitalId) return setBins([])
+    supabase.from('bins').select('*').eq('hospital_id', hospitalId).order('code')
+      .then(({ data }) => setBins(data ?? []))
+  }, [hospitalId])
 
   useEffect(() => {
     if (!bagId) return
@@ -79,6 +98,8 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
         setCollectionDate(bagRes.data.collection_date)
         setExistingStatus(bagRes.data.status)
         setTranscript(bagRes.data.raw_transcript || '')
+        setHospitalId(bagRes.data.hospital_id)
+        setBinId(bagRes.data.bin_id)
         if (bagRes.data.photo_url) setPhotoPreview(bagRes.data.photo_url)
       }
       if (medRes.data?.length) setRows(medRes.data)
@@ -193,15 +214,15 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
     try {
       let photoUrl = photoFile ? null : (photoPreview?.startsWith('http') ? photoPreview : null)
       if (photoFile) {
-        const path = `${profile.hospital_id}/${Date.now()}-${photoFile.name}`
+        const path = `${hospitalId}/${Date.now()}-${photoFile.name}`
         const { error: upErr } = await supabase.storage.from('bag-photos').upload(path, photoFile)
         if (upErr) throw upErr
         photoUrl = supabase.storage.from('bag-photos').getPublicUrl(path).data.publicUrl
       }
 
       const bagPayload = {
-        hospital_id: profile.hospital_id,
-        bin_id: profile.bin_id,
+        hospital_id: hospitalId,
+        bin_id: binId,
         collected_by: profile.id,
         collection_date: collectionDate,
         photo_url: photoUrl,
@@ -256,7 +277,6 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       <div className="entry-header">
         <div>
           <h2>{bagId ? 'Edit bag' : 'Log a bag'}</h2>
-          <p className="entry-sub">{profile?.hospitals?.name} · {profile?.bins?.code} ({profile?.bins?.location_label})</p>
         </div>
         <div className="voice-controls">
           <div className="mode-toggle">
@@ -274,6 +294,18 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       </div>
 
       <div className="field-row">
+        <label className="inline-field">
+          Hospital
+          <select value={hospitalId} onChange={e => { setHospitalId(e.target.value); setBinId('') }}>
+            {hospitals.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
+          </select>
+        </label>
+        <label className="inline-field">
+          Bin
+          <select value={binId} onChange={e => setBinId(e.target.value)} disabled={!hospitalId}>
+            {bins.map(b => <option key={b.id} value={b.id}>{b.code} — {b.location_label}</option>)}
+          </select>
+        </label>
         <label className="inline-field">
           Collection date
           <input type="date" value={collectionDate} onChange={e => setCollectionDate(e.target.value)} />

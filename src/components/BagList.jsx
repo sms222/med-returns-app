@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/AuthContext'
 
 function formatMed(m) {
   const parts = []
@@ -24,24 +25,53 @@ function formatMed(m) {
 }
 
 export default function BagList({ onOpenBag, refreshKey }) {
+  const { profile } = useAuth()
   const [bags, setBags] = useState([])
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState('submitted') // 'in_progress' | 'submitted' | 'all'
+  const [filter, setFilter] = useState('submitted') // 'in_progress' | 'submitted' | 'deleted' | 'all'
+  const [busyId, setBusyId] = useState(null)
+  const [localRefresh, setLocalRefresh] = useState(0)
 
   useEffect(() => {
     setLoading(true)
     let query = supabase
       .from('bags')
-      .select('*, hospitals(name), bins(code, location_label), staff_profiles!bags_collected_by_fkey(display_name), medications(*)')
+      .select('*, hospitals(name), bins(code, location_label), staff_profiles!bags_collected_by_fkey(display_name), deleted_by_staff:staff_profiles!bags_deleted_by_fkey(display_name), medications(*)')
       .order('collection_date', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(50)
-    if (filter !== 'all') query = query.eq('status', filter)
+
+    if (filter === 'deleted') {
+      query = query.not('deleted_at', 'is', null)
+    } else {
+      query = query.is('deleted_at', null)
+      if (filter !== 'all') query = query.eq('status', filter)
+    }
+
     query.then(({ data }) => {
       setBags(data ?? [])
       setLoading(false)
     })
-  }, [filter, refreshKey])
+  }, [filter, refreshKey, localRefresh])
+
+  async function handleDeleteBag(bag) {
+    const ok = window.confirm(
+      `Delete this bag from ${bag.hospitals?.name} · ${bag.bins?.code}, collected ${bag.collection_date}?\n\n` +
+      `This removes it from the normal log. It stays recorded for audit purposes and can be reviewed under "Deleted."`
+    )
+    if (!ok) return
+    setBusyId(bag.id)
+    const { error } = await supabase
+      .from('bags')
+      .update({ deleted_at: new Date().toISOString(), deleted_by: profile.id })
+      .eq('id', bag.id)
+    setBusyId(null)
+    if (error) {
+      alert(`Couldn't delete: ${error.message}`)
+      return
+    }
+    setLocalRefresh(k => k + 1)
+  }
 
   return (
     <div className="bag-list">
@@ -51,6 +81,7 @@ export default function BagList({ onOpenBag, refreshKey }) {
           <button className={filter === 'submitted' ? 'active' : ''} onClick={() => setFilter('submitted')}>Submitted</button>
           <button className={filter === 'in_progress' ? 'active' : ''} onClick={() => setFilter('in_progress')}>In progress</button>
           <button className={filter === 'all' ? 'active' : ''} onClick={() => setFilter('all')}>All</button>
+          <button className={filter === 'deleted' ? 'active' : ''} onClick={() => setFilter('deleted')}>Deleted</button>
         </div>
       </div>
 
@@ -59,15 +90,36 @@ export default function BagList({ onOpenBag, refreshKey }) {
 
       <div className="bag-log">
         {bags.map(bag => (
-          <div key={bag.id} className="bag-log-entry">
+          <div key={bag.id} className={`bag-log-entry ${bag.deleted_at ? 'bag-log-deleted' : ''}`}>
             <div className="bag-log-head">
               <div>
-                <span className={`bag-status bag-status-${bag.status}`}>{bag.status === 'in_progress' ? 'In progress' : 'Submitted'}</span>
+                {bag.deleted_at ? (
+                  <span className="bag-status bag-status-deleted">Deleted</span>
+                ) : (
+                  <span className={`bag-status bag-status-${bag.status}`}>{bag.status === 'in_progress' ? 'In progress' : 'Submitted'}</span>
+                )}
                 <span className="bag-log-loc">{bag.hospitals?.name} · {bag.bins?.code} ({bag.bins?.location_label})</span>
               </div>
               <div className="bag-log-meta">
                 {bag.collection_date} · logged by {bag.staff_profiles?.display_name ?? 'Unknown'}
-                <button className="link-btn bag-log-edit" onClick={() => onOpenBag(bag.id)}>Edit</button>
+                {bag.deleted_at ? (
+                  <span className="bag-log-deleted-note">
+                    · deleted by {bag.deleted_by_staff?.display_name ?? 'Unknown'} on {new Date(bag.deleted_at).toLocaleDateString()}
+                  </span>
+                ) : (
+                  <>
+                    <button className="link-btn bag-log-edit" onClick={() => onOpenBag(bag.id)}>Edit</button>
+                    {bag.status === 'submitted' && (
+                      <button
+                        className="link-btn bag-log-delete"
+                        onClick={() => handleDeleteBag(bag)}
+                        disabled={busyId === bag.id}
+                      >
+                        {busyId === bag.id ? 'Deleting…' : 'Delete'}
+                      </button>
+                    )}
+                  </>
+                )}
               </div>
             </div>
 
