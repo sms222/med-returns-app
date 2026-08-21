@@ -42,7 +42,7 @@ function Shell() {
   return (
     <div className="app-shell">
       <header className="app-topbar">
-        <span className="app-title">Med Returns</span>
+        <span className="app-title">UKM Medication Returns Tracker</span>
         <span className="app-user">{profile.display_name} · {profile.hospitals?.name} / {profile.bins?.code} ({profile.bins?.location_label})</span>
         <a className="link-btn" href="mailto:shamin@ukm.edu.my">Help</a>
         <button className="link-btn" onClick={signOut}>Sign out</button>

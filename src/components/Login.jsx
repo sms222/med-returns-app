@@ -78,7 +78,7 @@ export default function Login() {
   return (
     <div className="auth-screen">
       <div className="auth-card">
-        <h1>Med Returns</h1>
+        <h1>UKM Medication Returns Tracker</h1>
         <p className="auth-sub">Sign in to log and view returned medications.</p>
         <form onSubmit={handleSubmit}>
           <label>

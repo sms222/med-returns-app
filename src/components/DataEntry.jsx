@@ -261,7 +261,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
         <div className="voice-controls">
           <div className="mode-toggle">
             <button className={!assistMode ? 'active' : ''} onClick={() => setAssistMode(false)}>Quick fill</button>
-            <button className={assistMode ? 'active' : ''} onClick={() => setAssistMode(true)}>Ask what's missing</button>
+            <button className={assistMode ? 'active' : ''} onClick={() => setAssistMode(true)}>Assisted</button>
           </div>
           <button
             className={`mic-btn ${recording ? 'recording' : ''} ${pending ? 'pending' : ''}`}

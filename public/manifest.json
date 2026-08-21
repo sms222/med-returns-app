@@ -1,6 +1,6 @@
 {
-  "name": "Med Returns Tracker",
-  "short_name": "Med Returns",
+  "name": "UKM Medication Returns Tracker",
+  "short_name": "UKM MRT",
   "description": "Log medications returned to hospital collection bins and view the shared dashboard.",
   "start_url": "/",
   "display": "standalone",
