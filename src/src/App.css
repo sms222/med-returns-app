@@ -129,10 +129,28 @@
 @keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 rgba(193,82,74,0.4); } 50% { box-shadow: 0 0 0 8px rgba(193,82,74,0); } }
 
 .status-line { font-size: 12.5px; color: var(--muted); margin: 4px 0 10px; }
+.status-asking { color: var(--teal-dark); font-weight: 600; }
 
-.transcript-box { font-size: 12.5px; color: var(--muted); margin-bottom: 12px; background: var(--paper); border-radius: 8px; padding: 8px 12px; }
-.transcript-box summary { cursor: pointer; font-weight: 600; color: var(--ink); }
-.transcript-box p { margin: 6px 0 0; }
+.voice-controls { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+.mode-toggle { display: flex; gap: 4px; }
+.mode-toggle button {
+  background: var(--panel); border: 1px solid var(--line); font-size: 11.5px; padding: 5px 10px;
+  color: var(--muted); border-radius: 999px;
+}
+.mode-toggle button.active { background: var(--teal); color: white; border-color: var(--teal); }
+
+.transcript-live {
+  font-size: 13.5px; color: var(--ink); margin-bottom: 14px; background: var(--paper);
+  border-radius: 8px; padding: 10px 14px; border: 1px solid var(--line); min-height: 20px;
+}
+.transcript-live-label { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; display: block; margin-bottom: 4px; }
+.transcript-live textarea {
+  width: 100%; border: none; background: transparent; resize: vertical; font-family: inherit;
+  font-size: 13.5px; color: var(--ink); line-height: 1.5; padding: 0; min-height: 40px;
+}
+.transcript-live textarea:focus { outline: none; }
+
+.mic-btn.pending { background: var(--amber); }
 
 .photo-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
 .photo-btn {
