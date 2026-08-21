@@ -166,7 +166,7 @@ export default function Dashboard({ refreshKey }) {
   const conditionCounts = useMemo(() => {
     const counts = {}
     for (const m of meds) {
-      const c = m.condition_flag || 'ok'
+      const c = m.condition_flag ?? 'Not recorded'
       counts[c] = (counts[c] || 0) + 1
     }
     return Object.entries(counts).map(([name, count]) => ({ name, count }))

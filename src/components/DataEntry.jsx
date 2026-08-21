@@ -4,7 +4,6 @@ import { useAuth } from '../lib/AuthContext'
 import { transcribeAudio, parseTranscriptToMedications, fetchKnownDrugNames, speak, parseSingleFieldAnswer, unlockSpeech } from '../lib/voice'
 
 const PACK_TYPES = ['tablet', 'capsule', 'bottle', 'vial', 'blister', 'strip', 'ampoule', 'cartridge', 'sachet', 'box', 'other']
-const CONDITIONS = ['ok', 'damaged', 'exposed', 'contaminated']
 
 // Fields the assistant will proactively ask about if left blank after
 // dictation. Order matters — it asks in this sequence. type controls how the
@@ -14,7 +13,7 @@ const CORE_FIELDS = [
   { key: 'pack_type', type: 'text', label: 'unit of measure (tablet, capsule, bottle, vial, blister, strip, ampoule, cartridge, sachet, or box)', question: name => `What's the unit for ${name} — tablet, strip, bottle, or something else?`, confirm: v => `Saved as ${v}.` },
   { key: 'patient_mrn', type: 'text', label: 'patient MRN', question: name => `What's the patient's MRN for ${name}?`, confirm: v => `Saved as ${v}.` },
   { key: 'expiry_date', type: 'text', label: 'expiry date, formatted YYYY-MM-DD', question: name => `What's the expiry date for ${name}?`, confirm: v => `Saved as ${v}.` },
-  { key: 'condition_flag', type: 'enum', options: CONDITIONS, label: 'condition — one of ok, damaged, exposed, or contaminated', question: name => `Is the condition for ${name} ok, damaged, exposed, or contaminated?`, confirm: v => `Logged as ${v}.` },
+  { key: 'condition_flag', type: 'boolean', label: 'condition — good or not good, answer yes or no', question: name => `Is the condition for ${name} good?`, confirm: v => `Logged as ${v ? 'good' : 'not good'}.`, toStored: v => (v ? 'ok' : 'not_good') },
   { key: 'sealed', type: 'boolean', label: 'sealed — answer yes or no', question: name => `Is ${name} sealed?`, confirm: v => `Saved as ${v ? 'yes' : 'no'}.` },
 ]
 
@@ -38,7 +37,7 @@ function findNextMissing(rows) {
     for (const f of CORE_FIELDS) {
       const val = rows[i][f.key]
       if (val === '' || val === null || val === undefined) {
-        return { rowIndex: i, field: f.key, question: f.question(rows[i].drug_name), type: f.type, label: f.label, confirm: f.confirm }
+        return { rowIndex: i, field: f.key, question: f.question(rows[i].drug_name), type: f.type, label: f.label, confirm: f.confirm, toStored: f.toStored }
       }
     }
   }
@@ -112,17 +111,20 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
     })
   }, [bagId])
 
-  async function startRecording() {
-    unlockSpeech()
-    setStatus('')
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-    chunks.current = []
-    const mr = new MediaRecorder(stream)
-    mr.ondataavailable = e => chunks.current.push(e.data)
-    mr.onstop = handleRecordingStop
-    mr.start()
-    mediaRecorder.current = mr
-    setRecording(true)
+  async function beginListening() {
+    try {
+      unlockSpeech()
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      chunks.current = []
+      const mr = new MediaRecorder(stream)
+      mr.ondataavailable = e => chunks.current.push(e.data)
+      mr.onstop = handleRecordingStop
+      mr.start()
+      mediaRecorder.current = mr
+      setRecording(true)
+    } catch (err) {
+      console.warn('Could not auto-start listening — tap the mic to answer.', err)
+    }
   }
 
   function stopRecording() {
@@ -141,6 +143,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
     if (next) {
       setStatus(`Assistant: ${next.question}`)
       await speak(next.question)
+      await beginListening()
     } else {
       setStatus('Everything looks filled in — ready to save.')
       await speak('All set — ready to save.')
@@ -162,8 +165,8 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
 
         let value = raw
         if (pending.type === 'boolean') {
-          if (/\b(yes|yeah|yep|correct|sealed|true)\b/.test(lower)) value = true
-          else if (/\b(no|nope|not|unsealed|false)\b/.test(lower)) value = false
+          if (/\b(yes|yeah|yep|correct|good|sealed|true)\b/.test(lower)) value = true
+          else if (/\b(no|nope|not\s*good|unsealed|bad|false)\b/.test(lower)) value = false
           else value = null
         } else if (pending.type === 'enum') {
           value = pending.options?.find(o => lower.includes(o)) ?? null
@@ -174,8 +177,10 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
         if (value === null || value === '') {
           setStatus(`Didn't catch that clearly — asking again.`)
           await speak(`Sorry, I didn't quite catch that. ${pending.question}`)
+          await beginListening()
         } else {
-          const next = rows.map((r, idx) => (idx === pending.rowIndex ? { ...r, [pending.field]: value } : r))
+          const storedValue = pending.toStored ? pending.toStored(value) : value
+          const next = rows.map((r, idx) => (idx === pending.rowIndex ? { ...r, [pending.field]: storedValue } : r))
           setRows(next)
           const confirmText = pending.confirm ? pending.confirm(value) : `Saved as ${value}.`
           await askAboutNextMissing(next, confirmText)
@@ -314,7 +319,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
           </div>
           <button
             className={`mic-btn ${recording ? 'recording' : ''} ${pending ? 'pending' : ''}`}
-            onClick={recording ? stopRecording : startRecording}
+            onClick={recording ? stopRecording : beginListening}
             disabled={transcribing}
           >
             {recording ? '● Stop' : transcribing ? 'Working…' : pending ? '🎙 Answer' : '🎙 Speak'}
@@ -376,7 +381,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
             <tr>
               <th>Drug</th><th>Brand</th><th>UOM</th><th>Qty left</th>
               <th>MRN</th><th>Patient</th><th>Dispensed</th><th>Expiry</th>
-              <th>Batch/Lot No.</th><th>Condition</th><th>Label</th><th>Sealed</th>
+              <th>Batch/Lot No.</th><th>Condition OK</th><th>Label</th><th>Sealed</th>
               <th>Reclaim/Dispose</th><th>Clinic (if different)</th><th>Notes</th><th></th>
             </tr>
           </thead>
@@ -397,12 +402,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
                 <td><input type="date" value={row.dispensed_date || ''} onChange={e => updateRow(i, 'dispensed_date', e.target.value)} /></td>
                 <td><input type="date" value={row.expiry_date || ''} onChange={e => updateRow(i, 'expiry_date', e.target.value)} /></td>
                 <td><input value={row.batch_number} onChange={e => updateRow(i, 'batch_number', e.target.value)} /></td>
-                <td>
-                  <select value={row.condition_flag || ''} onChange={e => updateRow(i, 'condition_flag', e.target.value)}>
-                    <option value="">—</option>
-                    {CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                </td>
+                <td><input type="checkbox" checked={row.condition_flag === 'ok'} onChange={e => updateRow(i, 'condition_flag', e.target.checked ? 'ok' : 'not_good')} /></td>
                 <td><input type="checkbox" checked={!!row.label_attached} onChange={e => updateRow(i, 'label_attached', e.target.checked)} /></td>
                 <td><input type="checkbox" checked={!!row.sealed} onChange={e => updateRow(i, 'sealed', e.target.checked)} /></td>
                 <td>
