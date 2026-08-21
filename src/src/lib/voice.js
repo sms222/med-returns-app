@@ -2,6 +2,8 @@
 // structured medication fields (Groq Llama, free). Falls back to OpenAI
 // (paid, better accuracy) only if VITE_USE_OPENAI_FALLBACK=true and a key is set.
 
+import { supabase } from './supabase'
+
 const GROQ_KEY = import.meta.env.VITE_GROQ_API_KEY
 const OPENAI_KEY = import.meta.env.VITE_OPENAI_API_KEY
 const USE_OPENAI_FALLBACK = import.meta.env.VITE_USE_OPENAI_FALLBACK === 'true'
@@ -54,6 +56,24 @@ export async function transcribeAudio(audioBlob) {
   throw new Error('No transcription provider available. Set VITE_GROQ_API_KEY (free) in .env.')
 }
 
+// Pulls the distinct drug/brand names already logged in this system, so the
+// parser can correct near-miss transcriptions against real medications your
+// team has actually seen before, instead of guessing spelling from scratch.
+export async function fetchKnownDrugNames() {
+  const { data } = await supabase
+    .from('medications')
+    .select('drug_name, brand_name')
+    .not('drug_name', 'is', null)
+    .limit(1000)
+  if (!data) return []
+  const names = new Set()
+  for (const row of data) {
+    if (row.drug_name) names.add(row.drug_name.trim())
+    if (row.brand_name) names.add(row.brand_name.trim())
+  }
+  return [...names].slice(0, 300)
+}
+
 const FIELD_SCHEMA = `{
   "drug_name": string,
   "brand_name": string | null,
@@ -73,9 +93,17 @@ const FIELD_SCHEMA = `{
 
 // Uses Groq's free Llama model to turn a free-text transcript into one or
 // more structured medication rows (a staff member may describe several
-// medications from the same bag in one breath).
-export async function parseTranscriptToMedications(transcript) {
+// medications from the same bag in one breath). knownDrugs, if given, helps
+// the model correct near-miss transcriptions against real medications this
+// team has already logged.
+export async function parseTranscriptToMedications(transcript, knownDrugs = []) {
   if (!GROQ_KEY) throw new Error('VITE_GROQ_API_KEY is required for parsing.')
+
+  const knownDrugsNote = knownDrugs.length
+    ? `\n\nMedications previously logged in this system (correct likely mishearings ` +
+      `in the transcript to match one of these when it's clearly the same drug, ` +
+      `but never force a match that isn't actually a good fit): ${knownDrugs.join(', ')}.`
+    : ''
 
   const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
@@ -95,7 +123,8 @@ export async function parseTranscriptToMedications(transcript) {
             `returned medication(s) found in one patient bag. Return ONLY valid JSON: ` +
             `{"medications": [${FIELD_SCHEMA}, ...]}. One object per distinct medication ` +
             `mentioned. Leave a field null if not stated — never invent values. ` +
-            `Convert spoken dates to YYYY-MM-DD using reasonable assumptions.`,
+            `Convert spoken dates to YYYY-MM-DD using reasonable assumptions.` +
+            knownDrugsNote,
         },
         { role: 'user', content: transcript },
       ],
