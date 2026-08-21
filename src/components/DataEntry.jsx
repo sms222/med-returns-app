@@ -286,8 +286,13 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       {status && <p className={`status-line ${pending ? 'status-asking' : ''}`}>{status}</p>}
 
       <div className="transcript-live">
-        <span className="transcript-live-label">Transcript</span>
-        <p>{transcript || 'Nothing said yet — tap Speak to begin.'}</p>
+        <span className="transcript-live-label">Transcript (editable)</span>
+        <textarea
+          value={transcript}
+          onChange={e => setTranscript(e.target.value)}
+          placeholder="Nothing said yet — tap Speak to begin."
+          rows={3}
+        />
       </div>
 
       <div className="photo-row">
