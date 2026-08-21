@@ -77,16 +77,18 @@ export async function fetchKnownDrugNames() {
 const FIELD_SCHEMA = `{
   "drug_name": string,
   "brand_name": string | null,
-  "strength": string | null,
   "pack_type": "tablet" | "capsule" | "bottle" | "vial" | "blister" | "strip" | "ampoule" | "cartridge" | "sachet" | "box" | "other" | null,
   "quantity_remaining": number | null,
-  "manufacturer": string | null,
   "patient_mrn": string | null,
   "patient_name": string | null,
   "dispensed_date": "YYYY-MM-DD" | null,
   "expiry_date": "YYYY-MM-DD" | null,
   "batch_number": string | null,
   "condition_flag": "ok" | "damaged" | "exposed" | "contaminated" | null,
+  "label_attached": boolean | null,
+  "sealed": boolean | null,
+  "disposition": "reclaim" | "dispose" | null,
+  "source_clinic": string | null,
   "notes": string | null
 }`
 
@@ -124,11 +126,18 @@ export async function parseTranscriptToMedications(transcript, knownDrugs = []) 
             `mentioned. Leave a field null if not stated — never invent values. ` +
             `Convert spoken dates to YYYY-MM-DD using reasonable assumptions. ` +
             `IMPORTANT: quantity_remaining is ONLY the bare number of units left. ` +
-            `pack_type is the word describing what that number counts (tablet, capsule, ` +
-            `bottle, vial, blister, strip, ampoule, cartridge, sachet, box). For example ` +
-            `"28 tablets" means quantity_remaining: 28, pack_type: "tablet". "2 strips" means ` +
-            `quantity_remaining: 2, pack_type: "strip". Never combine the number and unit into ` +
-            `one field. Put any detail mentioned that doesn't fit another field into "notes".` +
+            `pack_type is the unit of measure describing what that number counts (tablet, ` +
+            `capsule, bottle, vial, blister, strip, ampoule, cartridge, sachet, box). For ` +
+            `example "28 tablets" means quantity_remaining: 28, pack_type: "tablet". "2 strips" ` +
+            `means quantity_remaining: 2, pack_type: "strip". Never combine the number and unit ` +
+            `into one field. drug_name should include the strength/dose as part of the name ` +
+            `text itself (e.g. "Betahistine 24mg"), not as a separate field. label_attached and ` +
+            `sealed are true/false if the person clearly says whether a label or seal is present; ` +
+            `leave null if not mentioned. disposition is "reclaim" if the medication will be put ` +
+            `back into stock/use, "dispose" if it will be destroyed/wasted — only set if stated. ` +
+            `source_clinic is only for a clinic or location different from where this bin normally ` +
+            `collects, if mentioned. Put any detail mentioned that doesn't fit another field into ` +
+            `"notes".` +
             knownDrugsNote,
         },
         { role: 'user', content: transcript },
@@ -164,19 +173,36 @@ function pickSoftFemaleVoice(voices) {
   )
 }
 
+// Some mobile browsers (notably iOS Safari) only allow speechSynthesis to
+// actually produce sound if it's "unlocked" by a call made directly inside a
+// user tap/click — a later speak() call from an async response can otherwise
+// fail completely silently. Call this synchronously from the mic button's
+// own click handler before doing anything async.
+export function unlockSpeech() {
+  if (!('speechSynthesis' in window)) return
+  try {
+    const unlock = new SpeechSynthesisUtterance(' ')
+    unlock.volume = 0
+    window.speechSynthesis.speak(unlock)
+  } catch { /* best effort */ }
+}
+
 // Speaks text aloud using the browser's built-in voice engine (no API cost).
 // Picks the softest-sounding female voice available on this device and
 // speaks at a gentle pace and pitch.
 export async function speak(text) {
   if (!('speechSynthesis' in window)) return
   if (!cachedVoices.length) cachedVoices = await loadVoices()
+  window.speechSynthesis.cancel()
+  // Small delay avoids a known Chrome/Android bug where speak() called
+  // immediately after cancel() is silently dropped.
+  await new Promise(r => setTimeout(r, 60))
   const utterance = new SpeechSynthesisUtterance(text)
   const voice = pickSoftFemaleVoice(cachedVoices)
   if (voice) utterance.voice = voice
   utterance.rate = 0.92
   utterance.pitch = 1.05
   utterance.volume = 0.9
-  window.speechSynthesis.cancel()
   window.speechSynthesis.speak(utterance)
 }
 

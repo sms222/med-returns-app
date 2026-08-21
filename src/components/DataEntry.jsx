@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
-import { transcribeAudio, parseTranscriptToMedications, fetchKnownDrugNames, speak, parseSingleFieldAnswer } from '../lib/voice'
+import { transcribeAudio, parseTranscriptToMedications, fetchKnownDrugNames, speak, parseSingleFieldAnswer, unlockSpeech } from '../lib/voice'
 
 const PACK_TYPES = ['tablet', 'capsule', 'bottle', 'vial', 'blister', 'strip', 'ampoule', 'cartridge', 'sachet', 'box', 'other']
 const CONDITIONS = ['ok', 'damaged', 'exposed', 'contaminated']
@@ -9,7 +9,6 @@ const CONDITIONS = ['ok', 'damaged', 'exposed', 'contaminated']
 // Fields the assistant will proactively ask about if left blank after
 // dictation. Order matters — it asks in this sequence.
 const CORE_FIELDS = [
-  { key: 'strength', question: name => `What's the strength for ${name}?` },
   { key: 'quantity_remaining', question: name => `How many are left for ${name}?` },
   { key: 'pack_type', question: name => `What's the unit for ${name} — tablet, strip, bottle, or something else?` },
   { key: 'patient_mrn', question: name => `What's the patient's MRN for ${name}?` },
@@ -18,10 +17,11 @@ const CORE_FIELDS = [
 
 function emptyRow() {
   return {
-    id: null, drug_name: '', brand_name: '', strength: '', pack_type: '',
-    quantity_remaining: '', manufacturer: '', patient_mrn: '', patient_name: '',
+    id: null, drug_name: '', brand_name: '', pack_type: '',
+    quantity_remaining: '', patient_mrn: '', patient_name: '',
     dispensed_date: '', expiry_date: '', batch_number: '',
-    condition_flag: 'ok', notes: '',
+    condition_flag: 'ok', label_attached: null, sealed: null,
+    disposition: '', source_clinic: '', notes: '',
   }
 }
 
@@ -56,6 +56,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   const [status, setStatus] = useState('')
   const [loadingBag, setLoadingBag] = useState(!!bagId)
   const [existingStatus, setExistingStatus] = useState('in_progress')
+  const [existingBagNumber, setExistingBagNumber] = useState(null)
   const [deletedRowIds, setDeletedRowIds] = useState([])
   const [assistMode, setAssistMode] = useState(false)
   const [pending, setPending] = useState(null) // { rowIndex, field, question } while assistant is waiting for an answer
@@ -100,6 +101,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
         setTranscript(bagRes.data.raw_transcript || '')
         setHospitalId(bagRes.data.hospital_id)
         setBinId(bagRes.data.bin_id)
+        setExistingBagNumber(bagRes.data.bag_number)
         if (bagRes.data.photo_url) setPhotoPreview(bagRes.data.photo_url)
       }
       if (medRes.data?.length) setRows(medRes.data)
@@ -108,6 +110,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   }, [bagId])
 
   async function startRecording() {
+    unlockSpeech()
     setStatus('')
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     chunks.current = []
@@ -247,7 +250,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       }
 
       const validRows = rows.filter(r => r.drug_name?.trim())
-      const toInsert = validRows.filter(r => !r.id).map(r => ({ ...r, id: undefined, bag_id: bag.id, quantity_remaining: r.quantity_remaining || null }))
+      const toInsert = validRows.filter(r => !r.id).map(r => ({ ...r, id: undefined, bag_id: bag.id, quantity_remaining: r.quantity_remaining || null, disposition: r.disposition || null }))
       const toUpdate = validRows.filter(r => r.id)
 
       if (toInsert.length) {
@@ -256,7 +259,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       }
       for (const r of toUpdate) {
         const { id, ...fields } = r
-        const { error } = await supabase.from('medications').update({ ...fields, quantity_remaining: fields.quantity_remaining || null }).eq('id', id)
+        const { error } = await supabase.from('medications').update({ ...fields, quantity_remaining: fields.quantity_remaining || null, disposition: fields.disposition || null }).eq('id', id)
         if (error) throw error
       }
 
@@ -310,7 +313,14 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
           Collection date
           <input type="date" value={collectionDate} onChange={e => setCollectionDate(e.target.value)} />
         </label>
-        {bagId && <span className={`bag-status bag-status-${existingStatus}`}>{existingStatus === 'in_progress' ? 'In progress' : 'Submitted'}</span>}
+        {bagId && (
+          <>
+            <span className="bag-log-ref">
+              {bins.find(b => b.id === binId)?.code ?? ''}-{existingBagNumber != null ? String(existingBagNumber).padStart(3, '0') : '???'}
+            </span>
+            <span className={`bag-status bag-status-${existingStatus}`}>{existingStatus === 'in_progress' ? 'In progress' : 'Submitted'}</span>
+          </>
+        )}
         {onCancel && <button className="link-btn" onClick={onCancel}>← Back to bags</button>}
       </div>
 
@@ -338,9 +348,10 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
         <table className="entry-table">
           <thead>
             <tr>
-              <th>Drug</th><th>Brand</th><th>Strength</th><th>Pack</th><th>Qty left</th>
-              <th>Manufacturer</th><th>MRN</th><th>Patient</th><th>Dispensed</th><th>Expiry</th>
-              <th>Batch</th><th>Condition</th><th>Notes</th><th></th>
+              <th>Drug</th><th>Brand</th><th>UOM</th><th>Qty left</th>
+              <th>MRN</th><th>Patient</th><th>Dispensed</th><th>Expiry</th>
+              <th>Batch/Lot No.</th><th>Condition</th><th>Label</th><th>Sealed</th>
+              <th>Reclaim/Dispose</th><th>Clinic (if different)</th><th>Notes</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -348,7 +359,6 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
               <tr key={row.id ?? `new-${i}`}>
                 <td><input value={row.drug_name} onChange={e => updateRow(i, 'drug_name', e.target.value)} /></td>
                 <td><input value={row.brand_name} onChange={e => updateRow(i, 'brand_name', e.target.value)} /></td>
-                <td><input value={row.strength} onChange={e => updateRow(i, 'strength', e.target.value)} /></td>
                 <td>
                   <select value={row.pack_type || ''} onChange={e => updateRow(i, 'pack_type', e.target.value)}>
                     <option value="">—</option>
@@ -356,7 +366,6 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
                   </select>
                 </td>
                 <td><input type="number" value={row.quantity_remaining ?? ''} onChange={e => updateRow(i, 'quantity_remaining', e.target.value)} /></td>
-                <td><input value={row.manufacturer} onChange={e => updateRow(i, 'manufacturer', e.target.value)} /></td>
                 <td><input value={row.patient_mrn} onChange={e => updateRow(i, 'patient_mrn', e.target.value)} /></td>
                 <td><input value={row.patient_name} onChange={e => updateRow(i, 'patient_name', e.target.value)} /></td>
                 <td><input type="date" value={row.dispensed_date || ''} onChange={e => updateRow(i, 'dispensed_date', e.target.value)} /></td>
@@ -367,6 +376,16 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
                     {CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </td>
+                <td><input type="checkbox" checked={!!row.label_attached} onChange={e => updateRow(i, 'label_attached', e.target.checked)} /></td>
+                <td><input type="checkbox" checked={!!row.sealed} onChange={e => updateRow(i, 'sealed', e.target.checked)} /></td>
+                <td>
+                  <select value={row.disposition || ''} onChange={e => updateRow(i, 'disposition', e.target.value)}>
+                    <option value="">—</option>
+                    <option value="reclaim">Reclaim</option>
+                    <option value="dispose">Dispose</option>
+                  </select>
+                </td>
+                <td><input value={row.source_clinic} onChange={e => updateRow(i, 'source_clinic', e.target.value)} /></td>
                 <td><input value={row.notes} onChange={e => updateRow(i, 'notes', e.target.value)} /></td>
                 <td><button className="row-remove" onClick={() => removeRow(i)} title="Remove row">✕</button></td>
               </tr>

@@ -12,15 +12,17 @@ export default function Dashboard({ refreshKey }) {
   const [meds, setMeds] = useState([])
   const [bags, setBags] = useState([])
   const [drugRef, setDrugRef] = useState({})
+  const [allBins, setAllBins] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     setLoading(true)
     Promise.all([
       supabase.from('medications').select('*, bags!inner(hospital_id, bin_id, collection_date, hospitals(name), bins(code, location_label), collected_by, deleted_at, staff_profiles!bags_collected_by_fkey(display_name))').is('bags.deleted_at', null).order('created_at', { ascending: false }).limit(2000),
-      supabase.from('bags').select('id, collection_date, hospitals(name), collected_by, staff_profiles!bags_collected_by_fkey(display_name)').is('deleted_at', null).order('collection_date', { ascending: false }).limit(2000),
+      supabase.from('bags').select('id, bin_id, collection_date, bag_number, hospitals(name), collected_by, staff_profiles!bags_collected_by_fkey(display_name)').is('deleted_at', null).order('collection_date', { ascending: false }).limit(2000),
       supabase.from('drug_reference').select('drug_name, drug_class, unit_cost'),
-    ]).then(([medRes, bagRes, refRes]) => {
+      supabase.from('bins').select('id, code, location_label, hospitals(name)').order('code'),
+    ]).then(([medRes, bagRes, refRes, binRes]) => {
       setMeds(medRes.data ?? [])
       setBags(bagRes.data ?? [])
       const map = {}
@@ -28,6 +30,7 @@ export default function Dashboard({ refreshKey }) {
         if (r.drug_name) map[r.drug_name.trim().toLowerCase()] = r
       }
       setDrugRef(map)
+      setAllBins(binRes.data ?? [])
       setLoading(false)
     })
   }, [refreshKey])
@@ -109,6 +112,40 @@ export default function Dashboard({ refreshKey }) {
     ]
   }, [meds])
 
+  // How much shelf life was left when each medication was actually returned —
+  // negative means it was already expired at the point of return.
+  const expiryProximity = useMemo(() => {
+    return enriched
+      .map(m => {
+        const collectionDate = m.bags?.collection_date
+        if (!m.expiry_date || !collectionDate) return null
+        const days = Math.round((new Date(m.expiry_date) - new Date(collectionDate)) / 86400000)
+        return { ...m, daysToExpiry: days }
+      })
+      .filter(Boolean)
+  }, [enriched])
+
+  const expiryProximityBuckets = useMemo(() => {
+    const buckets = [
+      { label: 'Already expired', test: d => d < 0 },
+      { label: '0–30 days left', test: d => d >= 0 && d <= 30 },
+      { label: '31–90 days left', test: d => d > 30 && d <= 90 },
+      { label: '91–180 days left', test: d => d > 90 && d <= 180 },
+      { label: '181–365 days left', test: d => d > 180 && d <= 365 },
+      { label: 'Over 1 year left', test: d => d > 365 },
+    ]
+    return buckets.map(b => ({
+      name: b.label,
+      count: expiryProximity.filter(m => b.test(m.daysToExpiry)).length,
+    }))
+  }, [expiryProximity])
+
+  const avgDaysToExpiry = useMemo(() => {
+    if (!expiryProximity.length) return null
+    const sum = expiryProximity.reduce((s, m) => s + m.daysToExpiry, 0)
+    return Math.round(sum / expiryProximity.length)
+  }, [expiryProximity])
+
   const conditionCounts = useMemo(() => {
     const counts = {}
     for (const m of meds) {
@@ -127,6 +164,31 @@ export default function Dashboard({ refreshKey }) {
     }
     return Object.entries(counts).sort(([a], [b]) => a.localeCompare(b)).map(([date, count]) => ({ date, count }))
   }, [bags])
+
+  const binStatus = useMemo(() => {
+    const byBin = {}
+    for (const b of bags) {
+      if (!b.bin_id) continue
+      if (!byBin[b.bin_id]) byBin[b.bin_id] = { count: 0, lastDate: null }
+      byBin[b.bin_id].count += 1
+      if (!byBin[b.bin_id].lastDate || b.collection_date > byBin[b.bin_id].lastDate) {
+        byBin[b.bin_id].lastDate = b.collection_date
+      }
+    }
+    const now = new Date()
+    return allBins.map(bin => {
+      const stat = byBin[bin.id] ?? { count: 0, lastDate: null }
+      const daysSince = stat.lastDate ? Math.floor((now - new Date(stat.lastDate)) / 86400000) : null
+      return {
+        code: bin.code,
+        location: bin.location_label,
+        hospital: bin.hospitals?.name,
+        count: stat.count,
+        lastDate: stat.lastDate,
+        daysSince,
+      }
+    }).sort((a, b) => (b.daysSince ?? 9999) - (a.daysSince ?? 9999))
+  }, [bags, allBins])
 
   const staffActivity = useMemo(() => {
     const counts = {}
@@ -230,6 +292,28 @@ export default function Dashboard({ refreshKey }) {
       </div>
 
       <div className="chart-block">
+        <h3>How much shelf life was left at return</h3>
+        {avgDaysToExpiry !== null && (
+          <p className="dash-note dash-note-neutral">
+            On average, medications were returned {avgDaysToExpiry >= 0
+              ? `${avgDaysToExpiry} days before they'd have expired`
+              : `${Math.abs(avgDaysToExpiry)} days after they'd already expired`}.
+          </p>
+        )}
+        {expiryProximityBuckets.some(b => b.count > 0) ? (
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={expiryProximityBuckets}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 10.5 }} interval={0} angle={-15} textAnchor="end" height={60} />
+              <YAxis allowDecimals={false} />
+              <Tooltip />
+              <Bar dataKey="count" fill="#9b7fb8" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        ) : <p className="dash-empty">No expiry data yet.</p>}
+      </div>
+
+      <div className="chart-block">
         <h3>Condition on return</h3>
         <ResponsiveContainer width="100%" height={180}>
           <BarChart data={conditionCounts}>
@@ -268,6 +352,32 @@ export default function Dashboard({ refreshKey }) {
             <Tooltip />
           </PieChart>
         </ResponsiveContainer>
+      </div>
+
+      <div className="chart-block">
+        <h3>Bin collection status</h3>
+        {binStatus.length ? (
+          <table className="bin-status-table">
+            <thead>
+              <tr><th>Bin</th><th>Hospital</th><th>Location</th><th>Bags collected</th><th>Last collected</th></tr>
+            </thead>
+            <tbody>
+              {binStatus.map(b => (
+                <tr key={b.code}>
+                  <td>{b.code}</td>
+                  <td>{b.hospital}</td>
+                  <td>{b.location}</td>
+                  <td>{b.count}</td>
+                  <td>
+                    {b.lastDate
+                      ? <>{b.lastDate} <span className="bin-days-ago">({b.daysSince}d ago)</span></>
+                      : <span className="bin-never">Never collected</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : <p className="dash-empty">No bins set up yet.</p>}
       </div>
 
       <h3 className="dash-section-title">Staff activity</h3>

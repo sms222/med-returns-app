@@ -6,7 +6,6 @@ function formatMed(m) {
   const parts = []
   if (m.drug_name) parts.push(m.drug_name)
   if (m.brand_name) parts.push(`(${m.brand_name})`)
-  if (m.strength) parts.push(m.strength)
   const head = parts.join(' ') || 'Unnamed item'
 
   const details = []
@@ -19,26 +18,39 @@ function formatMed(m) {
     details.push(`exp ${m.expiry_date}${isExpired ? ' (expired)' : ''}`)
   }
   if (m.condition_flag && m.condition_flag !== 'ok') details.push(m.condition_flag)
+  if (m.label_attached === false) details.push('no label')
+  if (m.sealed === false) details.push('unsealed')
+  if (m.disposition) details.push(m.disposition)
+  if (m.source_clinic) details.push(`from ${m.source_clinic}`)
   if (m.notes) details.push(m.notes)
 
   return { head, details: details.join(' · ') }
+}
+
+function bagRef(bag) {
+  const code = bag.bins?.code ?? '?'
+  const num = bag.bag_number != null ? String(bag.bag_number).padStart(3, '0') : '???'
+  return `${code}-${num}`
 }
 
 export default function BagList({ onOpenBag, refreshKey }) {
   const { profile } = useAuth()
   const [bags, setBags] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [filter, setFilter] = useState('submitted') // 'in_progress' | 'submitted' | 'deleted' | 'all'
   const [busyId, setBusyId] = useState(null)
   const [localRefresh, setLocalRefresh] = useState(0)
+  const [deletedByNames, setDeletedByNames] = useState({})
 
   useEffect(() => {
     setLoading(true)
+    setError('')
     let query = supabase
       .from('bags')
-      .select('*, hospitals(name), bins(code, location_label), staff_profiles!bags_collected_by_fkey(display_name), deleted_by_staff:staff_profiles!bags_deleted_by_fkey(display_name), medications(*)')
+      .select('*, hospitals(name), bins(code, location_label), staff_profiles!bags_collected_by_fkey(display_name), medications(*)')
       .order('collection_date', { ascending: false })
-      .order('created_at', { ascending: false })
+      .order('collected_at', { ascending: false })
       .limit(50)
 
     if (filter === 'deleted') {
@@ -48,15 +60,30 @@ export default function BagList({ onOpenBag, refreshKey }) {
       if (filter !== 'all') query = query.eq('status', filter)
     }
 
-    query.then(({ data }) => {
+    query.then(async ({ data, error }) => {
+      if (error) {
+        setError(error.message)
+        setBags([])
+        setLoading(false)
+        return
+      }
       setBags(data ?? [])
       setLoading(false)
+
+      // Only look up "deleted by" names when actually viewing the Deleted tab.
+      const deleterIds = [...new Set((data ?? []).map(b => b.deleted_by).filter(Boolean))]
+      if (deleterIds.length) {
+        const { data: staffRows } = await supabase.from('staff_profiles').select('id, display_name').in('id', deleterIds)
+        const map = {}
+        for (const s of staffRows ?? []) map[s.id] = s.display_name
+        setDeletedByNames(map)
+      }
     })
   }, [filter, refreshKey, localRefresh])
 
   async function handleDeleteBag(bag) {
     const ok = window.confirm(
-      `Delete this bag from ${bag.hospitals?.name} · ${bag.bins?.code}, collected ${bag.collection_date}?\n\n` +
+      `Delete bag ${bagRef(bag)} (${bag.hospitals?.name}, collected ${bag.collection_date})?\n\n` +
       `This removes it from the normal log. It stays recorded for audit purposes and can be reviewed under "Deleted."`
     )
     if (!ok) return
@@ -86,7 +113,8 @@ export default function BagList({ onOpenBag, refreshKey }) {
       </div>
 
       {loading && <p className="status-line">Loading…</p>}
-      {!loading && bags.length === 0 && <p className="status-line">No bags here yet.</p>}
+      {error && <p className="status-line" style={{ color: 'var(--rust)' }}>Couldn't load: {error}</p>}
+      {!loading && !error && bags.length === 0 && <p className="status-line">No bags here yet.</p>}
 
       <div className="bag-log">
         {bags.map(bag => (
@@ -98,13 +126,14 @@ export default function BagList({ onOpenBag, refreshKey }) {
                 ) : (
                   <span className={`bag-status bag-status-${bag.status}`}>{bag.status === 'in_progress' ? 'In progress' : 'Submitted'}</span>
                 )}
+                <span className="bag-log-ref">{bagRef(bag)}</span>
                 <span className="bag-log-loc">{bag.hospitals?.name} · {bag.bins?.code} ({bag.bins?.location_label})</span>
               </div>
               <div className="bag-log-meta">
                 {bag.collection_date} · logged by {bag.staff_profiles?.display_name ?? 'Unknown'}
                 {bag.deleted_at ? (
                   <span className="bag-log-deleted-note">
-                    · deleted by {bag.deleted_by_staff?.display_name ?? 'Unknown'} on {new Date(bag.deleted_at).toLocaleDateString()}
+                    · deleted by {deletedByNames[bag.deleted_by] ?? 'Unknown'} on {new Date(bag.deleted_at).toLocaleDateString()}
                   </span>
                 ) : (
                   <>
