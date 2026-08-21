@@ -146,6 +146,23 @@ export default function Dashboard({ refreshKey }) {
     return Math.round(sum / expiryProximity.length)
   }, [expiryProximity])
 
+  // Cost of items that were already expired at the point of return, split by
+  // whether they were still sealed (never used — the more preventable loss)
+  // versus unsealed (already in use, expected end-of-life waste).
+  const sealedExpiredCost = useMemo(() => {
+    const expiredAtReturn = expiryProximity.filter(m => m.daysToExpiry < 0)
+    const sealed = expiredAtReturn.filter(m => m.sealed === true)
+    const unsealed = expiredAtReturn.filter(m => m.sealed === false)
+    const unknown = expiredAtReturn.filter(m => m.sealed == null)
+    const sum = arr => arr.reduce((s, m) => s + (m.est_cost ?? 0), 0)
+    return {
+      sealedCost: sum(sealed), sealedCount: sealed.length,
+      unsealedCost: sum(unsealed), unsealedCount: unsealed.length,
+      unknownCost: sum(unknown), unknownCount: unknown.length,
+      totalCost: sum(expiredAtReturn), totalCount: expiredAtReturn.length,
+    }
+  }, [expiryProximity])
+
   const conditionCounts = useMemo(() => {
     const counts = {}
     for (const m of meds) {
@@ -311,6 +328,36 @@ export default function Dashboard({ refreshKey }) {
             </BarChart>
           </ResponsiveContainer>
         ) : <p className="dash-empty">No expiry data yet.</p>}
+      </div>
+
+      <div className="chart-block">
+        <h3>Cost of expired returns — sealed vs unsealed</h3>
+        {sealedExpiredCost.totalCount > 0 ? (
+          <>
+            <p className="dash-note dash-note-neutral">
+              Sealed-and-expired items were never used — that cost is the most preventable waste.
+            </p>
+            <div className="stat-row">
+              <div className="stat-card">
+                <span className="stat-num">{currency(sealedExpiredCost.sealedCost)}</span>
+                <span className="stat-label">Sealed &amp; expired ({sealedExpiredCost.sealedCount})</span>
+              </div>
+              <div className="stat-card">
+                <span className="stat-num">{currency(sealedExpiredCost.unsealedCost)}</span>
+                <span className="stat-label">Unsealed &amp; expired ({sealedExpiredCost.unsealedCount})</span>
+              </div>
+              <div className="stat-card">
+                <span className="stat-num">{currency(sealedExpiredCost.totalCost)}</span>
+                <span className="stat-label">Combined total ({sealedExpiredCost.totalCount})</span>
+              </div>
+            </div>
+            {sealedExpiredCost.unknownCount > 0 && (
+              <p className="status-line">
+                {sealedExpiredCost.unknownCount} expired item{sealedExpiredCost.unknownCount === 1 ? '' : 's'} have no sealed/unsealed status recorded ({currency(sealedExpiredCost.unknownCost)}) — included in the combined total but not the two breakdowns above.
+              </p>
+            )}
+          </>
+        ) : <p className="dash-empty">No expired items with matched cost data yet.</p>}
       </div>
 
       <div className="chart-block">

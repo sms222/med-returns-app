@@ -203,7 +203,11 @@ export async function speak(text) {
   utterance.rate = 0.92
   utterance.pitch = 1.05
   utterance.volume = 0.9
-  window.speechSynthesis.speak(utterance)
+  return new Promise(resolve => {
+    utterance.onend = resolve
+    utterance.onerror = resolve
+    window.speechSynthesis.speak(utterance)
+  })
 }
 
 // Extracts just one field's value from a short spoken answer, used by the

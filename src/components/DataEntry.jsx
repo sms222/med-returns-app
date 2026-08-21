@@ -7,12 +7,15 @@ const PACK_TYPES = ['tablet', 'capsule', 'bottle', 'vial', 'blister', 'strip', '
 const CONDITIONS = ['ok', 'damaged', 'exposed', 'contaminated']
 
 // Fields the assistant will proactively ask about if left blank after
-// dictation. Order matters — it asks in this sequence.
+// dictation. Order matters — it asks in this sequence. type controls how the
+// spoken answer gets interpreted and confirmed back.
 const CORE_FIELDS = [
-  { key: 'quantity_remaining', question: name => `How many are left for ${name}?` },
-  { key: 'pack_type', question: name => `What's the unit for ${name} — tablet, strip, bottle, or something else?` },
-  { key: 'patient_mrn', question: name => `What's the patient's MRN for ${name}?` },
-  { key: 'expiry_date', question: name => `What's the expiry date for ${name}?` },
+  { key: 'quantity_remaining', type: 'number', label: 'quantity remaining', question: name => `How many are left for ${name}?`, confirm: v => `Saved as ${v}.` },
+  { key: 'pack_type', type: 'text', label: 'unit of measure (tablet, capsule, bottle, vial, blister, strip, ampoule, cartridge, sachet, or box)', question: name => `What's the unit for ${name} — tablet, strip, bottle, or something else?`, confirm: v => `Saved as ${v}.` },
+  { key: 'patient_mrn', type: 'text', label: 'patient MRN', question: name => `What's the patient's MRN for ${name}?`, confirm: v => `Saved as ${v}.` },
+  { key: 'expiry_date', type: 'text', label: 'expiry date, formatted YYYY-MM-DD', question: name => `What's the expiry date for ${name}?`, confirm: v => `Saved as ${v}.` },
+  { key: 'condition_flag', type: 'enum', options: CONDITIONS, label: 'condition — one of ok, damaged, exposed, or contaminated', question: name => `Is the condition for ${name} ok, damaged, exposed, or contaminated?`, confirm: v => `Logged as ${v}.` },
+  { key: 'sealed', type: 'boolean', label: 'sealed — answer yes or no', question: name => `Is ${name} sealed?`, confirm: v => `Saved as ${v ? 'yes' : 'no'}.` },
 ]
 
 function emptyRow() {
@@ -20,7 +23,7 @@ function emptyRow() {
     id: null, drug_name: '', brand_name: '', pack_type: '',
     quantity_remaining: '', patient_mrn: '', patient_name: '',
     dispensed_date: '', expiry_date: '', batch_number: '',
-    condition_flag: 'ok', label_attached: null, sealed: null,
+    condition_flag: null, label_attached: null, sealed: null,
     disposition: '', source_clinic: '', notes: '',
   }
 }
@@ -35,7 +38,7 @@ function findNextMissing(rows) {
     for (const f of CORE_FIELDS) {
       const val = rows[i][f.key]
       if (val === '' || val === null || val === undefined) {
-        return { rowIndex: i, field: f.key, question: f.question(rows[i].drug_name) }
+        return { rowIndex: i, field: f.key, question: f.question(rows[i].drug_name), type: f.type, label: f.label, confirm: f.confirm }
       }
     }
   }
@@ -128,15 +131,19 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
     setRecording(false)
   }
 
-  function askAboutNextMissing(currentRows) {
+  async function askAboutNextMissing(currentRows, confirmationText) {
+    if (confirmationText) {
+      setStatus(confirmationText)
+      await speak(confirmationText)
+    }
     const next = findNextMissing(currentRows)
     setPending(next)
     if (next) {
-      speak(next.question)
       setStatus(`Assistant: ${next.question}`)
+      await speak(next.question)
     } else {
-      speak('All set — ready to save.')
       setStatus('Everything looks filled in — ready to save.')
+      await speak('All set — ready to save.')
     }
   }
 
@@ -150,10 +157,29 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       try {
         const text = await transcribeAudio(blob)
         setTranscript(prev => (prev ? prev + ' ' : '') + text)
-        const value = await parseSingleFieldAnswer(pending.field, text)
-        const next = rows.map((r, idx) => (idx === pending.rowIndex && value ? { ...r, [pending.field]: value } : r))
-        setRows(next)
-        askAboutNextMissing(next)
+        const raw = await parseSingleFieldAnswer(pending.label ?? pending.field, text)
+        const lower = raw.toLowerCase().trim()
+
+        let value = raw
+        if (pending.type === 'boolean') {
+          if (/\b(yes|yeah|yep|correct|sealed|true)\b/.test(lower)) value = true
+          else if (/\b(no|nope|not|unsealed|false)\b/.test(lower)) value = false
+          else value = null
+        } else if (pending.type === 'enum') {
+          value = pending.options?.find(o => lower.includes(o)) ?? null
+        } else if (!raw || !raw.trim()) {
+          value = null
+        }
+
+        if (value === null || value === '') {
+          setStatus(`Didn't catch that clearly — asking again.`)
+          await speak(`Sorry, I didn't quite catch that. ${pending.question}`)
+        } else {
+          const next = rows.map((r, idx) => (idx === pending.rowIndex ? { ...r, [pending.field]: value } : r))
+          setRows(next)
+          const confirmText = pending.confirm ? pending.confirm(value) : `Saved as ${value}.`
+          await askAboutNextMissing(next, confirmText)
+        }
       } catch (err) {
         console.error(err)
         setStatus(`Voice pipeline error: ${err.message}`)
@@ -178,7 +204,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
         setRows(updatedRows)
       }
       if (assistMode) {
-        askAboutNextMissing(updatedRows)
+        await askAboutNextMissing(updatedRows)
       } else {
         setStatus('Done — check the rows below before saving.')
       }
@@ -372,7 +398,8 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
                 <td><input type="date" value={row.expiry_date || ''} onChange={e => updateRow(i, 'expiry_date', e.target.value)} /></td>
                 <td><input value={row.batch_number} onChange={e => updateRow(i, 'batch_number', e.target.value)} /></td>
                 <td>
-                  <select value={row.condition_flag || 'ok'} onChange={e => updateRow(i, 'condition_flag', e.target.value)}>
+                  <select value={row.condition_flag || ''} onChange={e => updateRow(i, 'condition_flag', e.target.value)}>
+                    <option value="">—</option>
                     {CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </td>
