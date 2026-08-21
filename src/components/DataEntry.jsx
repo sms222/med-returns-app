@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
 import { transcribeAudio, parseTranscriptToMedications, fetchKnownDrugNames, speak, parseSingleFieldAnswer } from '../lib/voice'
 
-const PACK_TYPES = ['bottle', 'vial', 'blister', 'strip', 'box', 'other']
+const PACK_TYPES = ['tablet', 'capsule', 'bottle', 'vial', 'blister', 'strip', 'ampoule', 'cartridge', 'sachet', 'box', 'other']
 const CONDITIONS = ['ok', 'damaged', 'exposed', 'contaminated']
 
 // Fields the assistant will proactively ask about if left blank after
@@ -11,6 +11,7 @@ const CONDITIONS = ['ok', 'damaged', 'exposed', 'contaminated']
 const CORE_FIELDS = [
   { key: 'strength', question: name => `What's the strength for ${name}?` },
   { key: 'quantity_remaining', question: name => `How many are left for ${name}?` },
+  { key: 'pack_type', question: name => `What's the unit for ${name} — tablet, strip, bottle, or something else?` },
   { key: 'patient_mrn', question: name => `What's the patient's MRN for ${name}?` },
   { key: 'expiry_date', question: name => `What's the expiry date for ${name}?` },
 ]
@@ -20,7 +21,7 @@ function emptyRow() {
     id: null, drug_name: '', brand_name: '', strength: '', pack_type: '',
     quantity_remaining: '', manufacturer: '', patient_mrn: '', patient_name: '',
     dispensed_date: '', expiry_date: '', batch_number: '',
-    box_intact: null, condition_flag: 'ok', reason_for_return: '', expired_at_return: false,
+    condition_flag: 'ok', notes: '',
   }
 }
 
@@ -126,11 +127,9 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
         const text = await transcribeAudio(blob)
         setTranscript(prev => (prev ? prev + ' ' : '') + text)
         const value = await parseSingleFieldAnswer(pending.field, text)
-        setRows(prevRows => {
-          const next = prevRows.map((r, idx) => (idx === pending.rowIndex && value ? { ...r, [pending.field]: value } : r))
-          askAboutNextMissing(next)
-          return next
-        })
+        const next = rows.map((r, idx) => (idx === pending.rowIndex && value ? { ...r, [pending.field]: value } : r))
+        setRows(next)
+        askAboutNextMissing(next)
       } catch (err) {
         console.error(err)
         setStatus(`Voice pipeline error: ${err.message}`)
@@ -291,7 +290,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
           value={transcript}
           onChange={e => setTranscript(e.target.value)}
           placeholder="Nothing said yet — tap Speak to begin."
-          rows={3}
+          rows={5}
         />
       </div>
 
@@ -309,7 +308,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
             <tr>
               <th>Drug</th><th>Brand</th><th>Strength</th><th>Pack</th><th>Qty left</th>
               <th>Manufacturer</th><th>MRN</th><th>Patient</th><th>Dispensed</th><th>Expiry</th>
-              <th>Batch</th><th>Box intact</th><th>Condition</th><th>Expired?</th><th>Reason</th><th></th>
+              <th>Batch</th><th>Condition</th><th>Notes</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -332,21 +331,11 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
                 <td><input type="date" value={row.expiry_date || ''} onChange={e => updateRow(i, 'expiry_date', e.target.value)} /></td>
                 <td><input value={row.batch_number} onChange={e => updateRow(i, 'batch_number', e.target.value)} /></td>
                 <td>
-                  <select value={row.box_intact === null || row.box_intact === undefined ? '' : String(row.box_intact)} onChange={e => updateRow(i, 'box_intact', e.target.value === '' ? null : e.target.value === 'true')}>
-                    <option value="">—</option>
-                    <option value="true">Yes</option>
-                    <option value="false">No</option>
-                  </select>
-                </td>
-                <td>
                   <select value={row.condition_flag || 'ok'} onChange={e => updateRow(i, 'condition_flag', e.target.value)}>
                     {CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
                 </td>
-                <td>
-                  <input type="checkbox" checked={!!row.expired_at_return} onChange={e => updateRow(i, 'expired_at_return', e.target.checked)} />
-                </td>
-                <td><input value={row.reason_for_return} onChange={e => updateRow(i, 'reason_for_return', e.target.value)} /></td>
+                <td><input value={row.notes} onChange={e => updateRow(i, 'notes', e.target.value)} /></td>
                 <td><button className="row-remove" onClick={() => removeRow(i)} title="Remove row">✕</button></td>
               </tr>
             ))}

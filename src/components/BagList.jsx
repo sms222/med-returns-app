@@ -13,9 +13,12 @@ function formatMed(m) {
   if (m.quantity_remaining != null && m.quantity_remaining !== '') details.push(`qty ${m.quantity_remaining}`)
   if (m.patient_mrn) details.push(`MRN ${m.patient_mrn}`)
   if (m.patient_name) details.push(m.patient_name)
-  if (m.expiry_date) details.push(`exp ${m.expiry_date}`)
+  if (m.expiry_date) {
+    const isExpired = new Date(m.expiry_date) < new Date()
+    details.push(`exp ${m.expiry_date}${isExpired ? ' (expired)' : ''}`)
+  }
   if (m.condition_flag && m.condition_flag !== 'ok') details.push(m.condition_flag)
-  if (m.expired_at_return) details.push('expired at return')
+  if (m.notes) details.push(m.notes)
 
   return { head, details: details.join(' · ') }
 }

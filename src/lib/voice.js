@@ -78,7 +78,7 @@ const FIELD_SCHEMA = `{
   "drug_name": string,
   "brand_name": string | null,
   "strength": string | null,
-  "pack_type": "bottle" | "vial" | "blister" | "strip" | "box" | "other" | null,
+  "pack_type": "tablet" | "capsule" | "bottle" | "vial" | "blister" | "strip" | "ampoule" | "cartridge" | "sachet" | "box" | "other" | null,
   "quantity_remaining": number | null,
   "manufacturer": string | null,
   "patient_mrn": string | null,
@@ -86,9 +86,8 @@ const FIELD_SCHEMA = `{
   "dispensed_date": "YYYY-MM-DD" | null,
   "expiry_date": "YYYY-MM-DD" | null,
   "batch_number": string | null,
-  "box_intact": boolean | null,
   "condition_flag": "ok" | "damaged" | "exposed" | "contaminated" | null,
-  "reason_for_return": string | null
+  "notes": string | null
 }`
 
 // Uses Groq's free Llama model to turn a free-text transcript into one or
@@ -123,7 +122,13 @@ export async function parseTranscriptToMedications(transcript, knownDrugs = []) 
             `returned medication(s) found in one patient bag. Return ONLY valid JSON: ` +
             `{"medications": [${FIELD_SCHEMA}, ...]}. One object per distinct medication ` +
             `mentioned. Leave a field null if not stated — never invent values. ` +
-            `Convert spoken dates to YYYY-MM-DD using reasonable assumptions.` +
+            `Convert spoken dates to YYYY-MM-DD using reasonable assumptions. ` +
+            `IMPORTANT: quantity_remaining is ONLY the bare number of units left. ` +
+            `pack_type is the word describing what that number counts (tablet, capsule, ` +
+            `bottle, vial, blister, strip, ampoule, cartridge, sachet, box). For example ` +
+            `"28 tablets" means quantity_remaining: 28, pack_type: "tablet". "2 strips" means ` +
+            `quantity_remaining: 2, pack_type: "strip". Never combine the number and unit into ` +
+            `one field. Put any detail mentioned that doesn't fit another field into "notes".` +
             knownDrugsNote,
         },
         { role: 'user', content: transcript },

@@ -40,10 +40,11 @@ export default function Dashboard({ refreshKey }) {
   }, [bags])
 
   const expiredShare = useMemo(() => {
-    const expired = meds.filter(m => m.expired_at_return).length
+    const now = new Date()
+    const expired = meds.filter(m => m.expiry_date && new Date(m.expiry_date) < now).length
     const notExpired = meds.length - expired
     return [
-      { name: 'Expired at return', value: expired },
+      { name: 'Expired', value: expired },
       { name: 'Not expired', value: notExpired },
     ]
   }, [meds])
@@ -65,7 +66,7 @@ export default function Dashboard({ refreshKey }) {
       <div className="stat-row">
         <div className="stat-card"><span className="stat-num">{bags.length}</span><span className="stat-label">Bags logged</span></div>
         <div className="stat-card"><span className="stat-num">{meds.length}</span><span className="stat-label">Medications</span></div>
-        <div className="stat-card"><span className="stat-num">{meds.filter(m => m.expired_at_return).length}</span><span className="stat-label">Expired at return</span></div>
+        <div className="stat-card"><span className="stat-num">{meds.filter(m => m.expiry_date && new Date(m.expiry_date) < new Date()).length}</span><span className="stat-label">Expired</span></div>
       </div>
 
       <div className="chart-block">
