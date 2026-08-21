@@ -1,10 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
-import { transcribeAudio, parseTranscriptToMedications, fetchKnownDrugNames } from '../lib/voice'
+import { transcribeAudio, parseTranscriptToMedications, fetchKnownDrugNames, speak, parseSingleFieldAnswer } from '../lib/voice'
 
 const PACK_TYPES = ['bottle', 'vial', 'blister', 'strip', 'box', 'other']
 const CONDITIONS = ['ok', 'damaged', 'exposed', 'contaminated']
+
+// Fields the assistant will proactively ask about if left blank after
+// dictation. Order matters — it asks in this sequence.
+const CORE_FIELDS = [
+  { key: 'strength', question: name => `What's the strength for ${name}?` },
+  { key: 'quantity_remaining', question: name => `How many are left for ${name}?` },
+  { key: 'patient_mrn', question: name => `What's the patient's MRN for ${name}?` },
+  { key: 'expiry_date', question: name => `What's the expiry date for ${name}?` },
+]
 
 function emptyRow() {
   return {
@@ -17,6 +26,19 @@ function emptyRow() {
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10)
+}
+
+function findNextMissing(rows) {
+  for (let i = 0; i < rows.length; i++) {
+    if (!rows[i].drug_name?.trim()) continue
+    for (const f of CORE_FIELDS) {
+      const val = rows[i][f.key]
+      if (val === '' || val === null || val === undefined) {
+        return { rowIndex: i, field: f.key, question: f.question(rows[i].drug_name) }
+      }
+    }
+  }
+  return null
 }
 
 // bagId: null to start a new bag, or an existing bag's id to reopen/resume it.
@@ -34,6 +56,8 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   const [loadingBag, setLoadingBag] = useState(!!bagId)
   const [existingStatus, setExistingStatus] = useState('in_progress')
   const [deletedRowIds, setDeletedRowIds] = useState([])
+  const [assistMode, setAssistMode] = useState(false)
+  const [pending, setPending] = useState(null) // { rowIndex, field, question } while assistant is waiting for an answer
 
   const mediaRecorder = useRef(null)
   const chunks = useRef([])
@@ -79,22 +103,62 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
     setRecording(false)
   }
 
+  function askAboutNextMissing(currentRows) {
+    const next = findNextMissing(currentRows)
+    setPending(next)
+    if (next) {
+      speak(next.question)
+      setStatus(`Assistant: ${next.question}`)
+    } else {
+      speak('All set — ready to save.')
+      setStatus('Everything looks filled in — ready to save.')
+    }
+  }
+
   async function handleRecordingStop() {
     const blob = new Blob(chunks.current, { type: 'audio/webm' })
     setTranscribing(true)
+
+    // Answering a follow-up question from the assistant.
+    if (pending) {
+      setStatus('Listening for your answer…')
+      try {
+        const text = await transcribeAudio(blob)
+        setTranscript(prev => (prev ? prev + ' ' : '') + text)
+        const value = await parseSingleFieldAnswer(pending.field, text)
+        setRows(prevRows => {
+          const next = prevRows.map((r, idx) => (idx === pending.rowIndex && value ? { ...r, [pending.field]: value } : r))
+          askAboutNextMissing(next)
+          return next
+        })
+      } catch (err) {
+        console.error(err)
+        setStatus(`Voice pipeline error: ${err.message}`)
+      } finally {
+        setTranscribing(false)
+      }
+      return
+    }
+
+    // Normal dictation.
     setStatus('Transcribing…')
     try {
       const text = await transcribeAudio(blob)
       setTranscript(prev => (prev ? prev + ' ' : '') + text)
       setStatus('Parsing into fields…')
       const meds = await parseTranscriptToMedications(text, knownDrugsRef.current ?? [])
+      let updatedRows = rows
       if (meds.length) {
-        setRows(prev => {
-          const base = prev.length === 1 && !prev[0].drug_name ? [] : prev
-          return [...base, ...meds.map(m => ({ ...emptyRow(), ...m }))]
-        })
+        updatedRows = (rows.length === 1 && !rows[0].drug_name ? [] : rows).concat(
+          meds.map(m => ({ ...emptyRow(), ...m }))
+        )
+        setRows(updatedRows)
       }
-      setStatus('Done — check the rows below before saving.')
+      if (assistMode) {
+        askAboutNextMissing(updatedRows)
+      } else {
+        setStatus('Done — check the rows below before saving.')
+      }
     } catch (err) {
       console.error(err)
       setStatus(`Voice pipeline error: ${err.message}`)
@@ -195,13 +259,19 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
           <h2>{bagId ? 'Edit bag' : 'Log a bag'}</h2>
           <p className="entry-sub">{profile?.hospitals?.name} · {profile?.bins?.code} ({profile?.bins?.location_label})</p>
         </div>
-        <button
-          className={`mic-btn ${recording ? 'recording' : ''}`}
-          onClick={recording ? stopRecording : startRecording}
-          disabled={transcribing}
-        >
-          {recording ? '● Stop' : transcribing ? 'Working…' : '🎙 Speak'}
-        </button>
+        <div className="voice-controls">
+          <div className="mode-toggle">
+            <button className={!assistMode ? 'active' : ''} onClick={() => setAssistMode(false)}>Quick fill</button>
+            <button className={assistMode ? 'active' : ''} onClick={() => setAssistMode(true)}>Ask what's missing</button>
+          </div>
+          <button
+            className={`mic-btn ${recording ? 'recording' : ''} ${pending ? 'pending' : ''}`}
+            onClick={recording ? stopRecording : startRecording}
+            disabled={transcribing}
+          >
+            {recording ? '● Stop' : transcribing ? 'Working…' : pending ? '🎙 Answer' : '🎙 Speak'}
+          </button>
+        </div>
       </div>
 
       <div className="field-row">
@@ -213,14 +283,12 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
         {onCancel && <button className="link-btn" onClick={onCancel}>← Back to bags</button>}
       </div>
 
-      {status && <p className="status-line">{status}</p>}
+      {status && <p className={`status-line ${pending ? 'status-asking' : ''}`}>{status}</p>}
 
-      {transcript && (
-        <details className="transcript-box">
-          <summary>Transcript</summary>
-          <p>{transcript}</p>
-        </details>
-      )}
+      <div className="transcript-live">
+        <span className="transcript-live-label">Transcript</span>
+        <p>{transcript || 'Nothing said yet — tap Speak to begin.'}</p>
+      </div>
 
       <div className="photo-row">
         <label className="photo-btn">

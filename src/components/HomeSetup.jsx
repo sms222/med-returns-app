@@ -38,7 +38,7 @@ export default function HomeSetup() {
       bin_id: binId,
     })
     setBusy(false)
-    if (error) return setError(error.message)
+    if (error && error.code !== '23505') return setError(error.message)
     refreshProfile()
   }
 

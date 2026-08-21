@@ -9,7 +9,7 @@ import './App.css'
 
 const TABS = [
   { key: 'entry', label: 'Log a bag' },
-  { key: 'bags', label: 'Bags' },
+  { key: 'bags', label: 'Data log' },
   { key: 'overview', label: 'Overview' },
 ]
 

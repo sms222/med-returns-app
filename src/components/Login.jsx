@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../lib/AuthContext'
 
 const SUPPORT_EMAIL = 'shamin@ukm.edu.my'
 
 export default function Login() {
+  const { refreshProfile } = useAuth()
   const [mode, setMode] = useState('signin') // 'signin' | 'signup' | 'reset'
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -66,7 +68,7 @@ export default function Login() {
       })
       setBusy(false)
       if (profileError) setError(profileError.message)
-      // AuthContext picks up the new profile automatically on next render.
+      else refreshProfile()
     } else {
       setBusy(false)
       setNotice('Check your email to confirm your account, then sign in — you\'ll finish setup on your first sign-in.')
