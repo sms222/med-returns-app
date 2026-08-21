@@ -1,0 +1,12 @@
+{
+  "name": "Med Returns Tracker",
+  "short_name": "Med Returns",
+  "description": "Log medications returned to hospital collection bins and view the shared dashboard.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f7f5",
+  "theme_color": "#1e4f4d",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
