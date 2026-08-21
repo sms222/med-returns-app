@@ -31,6 +31,26 @@ function todayISO() {
   return new Date().toISOString().slice(0, 10)
 }
 
+// Cycles a checkbox-style field through: unanswered → good/yes → bad/no → unanswered.
+function cycleConditionFlag(current) {
+  if (current == null) return 'ok'
+  if (current === 'ok') return 'not_good'
+  return null
+}
+function cycleBool(current) {
+  if (current == null) return true
+  if (current === true) return false
+  return null
+}
+function triIcon(value, trueVal) {
+  if (value == null) return '—'
+  return value === trueVal ? '✓' : '✗'
+}
+function triClass(value, trueVal) {
+  if (value == null) return 'is-unset'
+  return value === trueVal ? 'is-yes' : 'is-no'
+}
+
 function findNextMissing(rows) {
   for (let i = 0; i < rows.length; i++) {
     if (!rows[i].drug_name?.trim()) continue
@@ -381,8 +401,8 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
             <tr>
               <th>Drug</th><th>Brand</th><th>UOM</th><th>Qty left</th>
               <th>MRN</th><th>Patient</th><th>Dispensed</th><th>Expiry</th>
-              <th>Batch/Lot No.</th><th>Condition OK</th><th>Label</th><th>Sealed</th>
-              <th>Reclaim/Dispose</th><th>Clinic (if different)</th><th>Notes</th><th></th>
+              <th>Batch/Lot No.</th><th>Condition</th><th>Label</th><th>Sealed</th>
+              <th>Action</th><th>Clinic</th><th>Notes</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -402,9 +422,24 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
                 <td><input type="date" value={row.dispensed_date || ''} onChange={e => updateRow(i, 'dispensed_date', e.target.value)} /></td>
                 <td><input type="date" value={row.expiry_date || ''} onChange={e => updateRow(i, 'expiry_date', e.target.value)} /></td>
                 <td><input value={row.batch_number} onChange={e => updateRow(i, 'batch_number', e.target.value)} /></td>
-                <td><input type="checkbox" checked={row.condition_flag === 'ok'} onChange={e => updateRow(i, 'condition_flag', e.target.checked ? 'ok' : 'not_good')} /></td>
-                <td><input type="checkbox" checked={!!row.label_attached} onChange={e => updateRow(i, 'label_attached', e.target.checked)} /></td>
-                <td><input type="checkbox" checked={!!row.sealed} onChange={e => updateRow(i, 'sealed', e.target.checked)} /></td>
+                <td>
+                  <button type="button" className={`tick-toggle ${triClass(row.condition_flag, 'ok')}`}
+                    onClick={() => updateRow(i, 'condition_flag', cycleConditionFlag(row.condition_flag))}>
+                    {triIcon(row.condition_flag, 'ok')}
+                  </button>
+                </td>
+                <td>
+                  <button type="button" className={`tick-toggle ${triClass(row.label_attached, true)}`}
+                    onClick={() => updateRow(i, 'label_attached', cycleBool(row.label_attached))}>
+                    {triIcon(row.label_attached, true)}
+                  </button>
+                </td>
+                <td>
+                  <button type="button" className={`tick-toggle ${triClass(row.sealed, true)}`}
+                    onClick={() => updateRow(i, 'sealed', cycleBool(row.sealed))}>
+                    {triIcon(row.sealed, true)}
+                  </button>
+                </td>
                 <td>
                   <select value={row.disposition || ''} onChange={e => updateRow(i, 'disposition', e.target.value)}>
                     <option value="">—</option>

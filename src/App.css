@@ -180,6 +180,15 @@
 }
 .entry-table input[type="checkbox"] { width: auto; min-width: 0; }
 
+.tick-toggle {
+  width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--paper); font-size: 15px; font-weight: 700; line-height: 1;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.tick-toggle.is-unset { color: var(--muted); }
+.tick-toggle.is-yes { background: #e1f0ea; border-color: #7d8f69; color: #1e6b4f; }
+.tick-toggle.is-no { background: #f3e1e0; border-color: #c1524a; color: #8a2e26; }
+
 .row-remove { background: none; color: var(--muted); font-size: 13px; padding: 4px; }
 .row-remove:hover { color: var(--rust); }
 
