@@ -201,6 +201,28 @@ export function stopSpeaking() {
   if ('speechSynthesis' in window) window.speechSynthesis.cancel()
 }
 
+// A short, distinct "go ahead" tone — played the instant recording actually
+// starts, so there's no ambiguity about when it's safe to start answering
+// (as opposed to guessing based on when the spoken question seemed to end).
+export function playBeep() {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext
+    if (!AudioCtx) return
+    const ctx = new AudioCtx()
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'sine'
+    osc.frequency.value = 880
+    gain.gain.setValueAtTime(0.18, ctx.currentTime)
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18)
+    osc.connect(gain)
+    gain.connect(ctx.destination)
+    osc.start()
+    osc.stop(ctx.currentTime + 0.18)
+    osc.onended = () => ctx.close().catch(() => {})
+  } catch { /* best effort — never block the recording flow over a beep */ }
+}
+
 export async function speak(text) {
   if (!('speechSynthesis' in window)) return
   if (!cachedVoices.length) cachedVoices = await loadVoices()

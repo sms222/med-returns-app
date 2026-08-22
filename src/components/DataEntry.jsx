@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
-import { transcribeAudio, parseTranscriptToMedications, fetchKnownDrugNames, speak, parseSingleFieldAnswer, unlockSpeech, stopSpeaking } from '../lib/voice'
+import { transcribeAudio, parseTranscriptToMedications, fetchKnownDrugNames, speak, parseSingleFieldAnswer, unlockSpeech, stopSpeaking, playBeep } from '../lib/voice'
 
 const PACK_TYPES = ['tablet', 'capsule', 'bottle', 'vial', 'blister', 'strip', 'ampoule', 'cartridge', 'sachet', 'box', 'other']
 
@@ -80,7 +80,7 @@ function findNextMissing(rows, skipped = {}) {
       const val = rows[i][f.key]
       const isMissing = val === '' || val === null || val === undefined
       if (isMissing && !skipped[`${i}:${f.key}`]) {
-        return { rowIndex: i, field: f.key, question: f.question(rows[i].drug_name), type: f.type, label: f.label, confirm: f.confirm, toStored: f.toStored, naSafe: f.naSafe }
+        return { rowIndex: i, field: f.key, question: f.question(rows[i].drug_name), type: f.type, label: f.label, confirm: f.confirm, toStored: f.toStored, naSafe: f.naSafe, options: f.options }
       }
     }
   }
@@ -241,10 +241,12 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
     silenceWatcherRef.current = requestAnimationFrame(tick)
   }
 
-  async function beginListening(autoStop = false) {
+  async function beginListening(autoStop = false, prewarmedStream = null) {
     try {
       unlockSpeech()
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = prewarmedStream
+        ? (await prewarmedStream) || (await navigator.mediaDevices.getUserMedia({ audio: true }))
+        : await navigator.mediaDevices.getUserMedia({ audio: true })
       chunks.current = []
       const mr = new MediaRecorder(stream)
       mr.ondataavailable = e => chunks.current.push(e.data)
@@ -252,6 +254,10 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       mr.start()
       mediaRecorder.current = mr
       setRecording(true)
+      // Audible "go ahead" cue — recording is now actually live, distinct
+      // from the assistant's own voice, so there's no ambiguity about
+      // whether it's safe to start talking yet.
+      if (autoStop) playBeep()
       if (autoStop) watchForSilence(stream, mr)
     } catch (err) {
       console.warn('Could not auto-start listening — tap the mic to answer.', err)
@@ -292,10 +298,15 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       setStatus(`Assistant: ${next.question}`)
       appendTranscript('Assistant', next.question)
       setSpeaking(true)
+      // Start acquiring the mic in parallel with the TTS, not after it —
+      // getUserMedia has real latency, and waiting until speak() resolves
+      // to request it meant the first word of the answer often landed
+      // before recording had actually started.
+      const micPromise = navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => null)
       await speak(next.question)
       setSpeaking(false)
       if (stoppedRef.current) return
-      await beginListening(true)
+      await beginListening(true, micPromise)
     } else {
       setStatus('Everything looks filled in — ready to save.')
       appendTranscript('Assistant', 'All set — ready to save.')
@@ -560,8 +571,12 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
 
       <div className="photo-row">
         <label className="photo-btn">
-          📷 {photoPreview ? 'Retake bag photo' : 'Add bag photo'}
+          📷 {photoPreview ? 'Retake photo' : 'Take photo'}
           <input type="file" accept="image/*" capture="environment" onChange={handlePhoto} hidden />
+        </label>
+        <label className="photo-btn">
+          🖼 {photoPreview ? 'Replace with upload' : 'Upload photo'}
+          <input type="file" accept="image/*" onChange={handlePhoto} hidden />
         </label>
         {photoPreview && <img src={photoPreview} alt="Bag preview" className="photo-preview" />}
       </div>
