@@ -200,7 +200,7 @@ export async function speak(text) {
   const utterance = new SpeechSynthesisUtterance(text)
   const voice = pickSoftFemaleVoice(cachedVoices)
   if (voice) utterance.voice = voice
-  utterance.rate = 0.92
+  utterance.rate = 1.15
   utterance.pitch = 1.05
   utterance.volume = 0.9
   return new Promise(resolve => {

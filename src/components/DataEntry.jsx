@@ -8,14 +8,22 @@ const PACK_TYPES = ['tablet', 'capsule', 'bottle', 'vial', 'blister', 'strip', '
 // Fields the assistant will proactively ask about if left blank after
 // dictation. Order matters — it asks in this sequence. type controls how the
 // spoken answer gets interpreted and confirmed back.
+// naSafe: true means it's OK to literally store the text "NA" in this field
+// when the person says none/not available (safe for free-text DB columns).
+// Fields backed by a number/date/enum column stay naSafe: false — saying
+// "none" there just marks the field as skipped instead of writing bad data.
 const CORE_FIELDS = [
-  { key: 'quantity_remaining', type: 'number', label: 'quantity remaining', question: name => `How many are left for ${name}?`, confirm: v => `Saved as ${v}.` },
-  { key: 'pack_type', type: 'text', label: 'unit of measure (tablet, capsule, bottle, vial, blister, strip, ampoule, cartridge, sachet, or box)', question: name => `What's the unit for ${name} — tablet, strip, bottle, or something else?`, confirm: v => `Saved as ${v}.` },
-  { key: 'patient_mrn', type: 'text', label: 'patient MRN', question: name => `What's the patient's MRN for ${name}?`, confirm: v => `Saved as ${v}.` },
-  { key: 'expiry_date', type: 'text', label: 'expiry date, formatted YYYY-MM-DD', question: name => `What's the expiry date for ${name}?`, confirm: v => `Saved as ${v}.` },
-  { key: 'condition_flag', type: 'boolean', label: 'condition — good or not good, answer yes or no', question: name => `Is the condition for ${name} good?`, confirm: v => `Logged as ${v ? 'good' : 'not good'}.`, toStored: v => (v ? 'ok' : 'not_good') },
-  { key: 'sealed', type: 'boolean', label: 'sealed — answer yes or no', question: name => `Is ${name} sealed?`, confirm: v => `Saved as ${v ? 'yes' : 'no'}.` },
+  { key: 'quantity_remaining', type: 'number', naSafe: false, label: 'quantity remaining', question: name => `How many are left for ${name}? Say the number, or say none.`, confirm: v => `Saved as ${v}.` },
+  { key: 'pack_type', type: 'text', naSafe: false, label: 'unit of measure (tablet, capsule, bottle, vial, blister, strip, ampoule, cartridge, sachet, or box)', question: name => `What's the unit for ${name} — tablet, strip, bottle, or something else? Or say none.`, confirm: v => `Saved as ${v}.` },
+  { key: 'patient_mrn', type: 'text', naSafe: true, label: 'patient MRN', question: name => `What's the patient's MRN for ${name}? Or say none.`, confirm: v => `Saved as ${v}.` },
+  { key: 'expiry_date', type: 'text', naSafe: false, label: 'expiry date, formatted YYYY-MM-DD', question: name => `What's the expiry date for ${name}? Or say none.`, confirm: v => `Saved as ${v}.` },
+  { key: 'condition_flag', type: 'boolean', naSafe: false, label: 'condition — good or not good', question: name => `Is the condition for ${name} good? Say 1 for yes, 2 for no.`, confirm: v => `Logged as ${v ? 'good' : 'not good'}.`, toStored: v => (v ? 'ok' : 'not_good') },
+  { key: 'sealed', type: 'boolean', naSafe: false, label: 'sealed', question: name => `Is ${name} sealed? Say 1 for yes, 2 for no.`, confirm: v => `Saved as ${v ? 'yes' : 'no'}.` },
 ]
+
+// Recognizes "none" / "not available" style answers so they can be
+// accepted immediately instead of triggering a re-ask.
+const NA_PATTERN = /\b(none|n\s*\/?\s*a|not\s*applicable|not\s*available|nothing)\b/
 
 function emptyRow() {
   return {
@@ -51,13 +59,14 @@ function triClass(value, trueVal) {
   return value === trueVal ? 'is-yes' : 'is-no'
 }
 
-function findNextMissing(rows) {
+function findNextMissing(rows, skipped = {}) {
   for (let i = 0; i < rows.length; i++) {
     if (!rows[i].drug_name?.trim()) continue
     for (const f of CORE_FIELDS) {
       const val = rows[i][f.key]
-      if (val === '' || val === null || val === undefined) {
-        return { rowIndex: i, field: f.key, question: f.question(rows[i].drug_name), type: f.type, label: f.label, confirm: f.confirm, toStored: f.toStored }
+      const isMissing = val === '' || val === null || val === undefined
+      if (isMissing && !skipped[`${i}:${f.key}`]) {
+        return { rowIndex: i, field: f.key, question: f.question(rows[i].drug_name), type: f.type, label: f.label, confirm: f.confirm, toStored: f.toStored, naSafe: f.naSafe }
       }
     }
   }
@@ -82,6 +91,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   const [deletedRowIds, setDeletedRowIds] = useState([])
   const [assistMode, setAssistMode] = useState(false)
   const [pending, setPending] = useState(null) // { rowIndex, field, question } while assistant is waiting for an answer
+  const [skippedFields, setSkippedFields] = useState({}) // `${rowIndex}:${field}` -> true, once answered NA or unclear
   const [hospitals, setHospitals] = useState([])
   const [bins, setBins] = useState([])
   const [hospitalId, setHospitalId] = useState('')
@@ -92,6 +102,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   const knownDrugsRef = useRef(null)
   const pendingRef = useRef(null)
   const rowsRef = useRef(rows)
+  const skippedRef = useRef(skippedFields)
   const silenceWatcherRef = useRef(null)
 
   // Keep refs in sync so the recorder's onstop callback — which can end up
@@ -99,6 +110,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   // reads the latest pending question and rows instead of an old snapshot.
   useEffect(() => { pendingRef.current = pending }, [pending])
   useEffect(() => { rowsRef.current = rows }, [rows])
+  useEffect(() => { skippedRef.current = skippedFields }, [skippedFields])
 
   // These update the ref immediately (not waiting for the effect above) so
   // the very next mic recording — which can start within the same tick —
@@ -110,6 +122,10 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   function setRowsNow(value) {
     rowsRef.current = value
     setRows(value)
+  }
+  function setSkippedNow(value) {
+    skippedRef.current = value
+    setSkippedFields(value)
   }
 
   useEffect(() => {
@@ -241,7 +257,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       setStatus(confirmationText)
       await speak(confirmationText)
     }
-    const next = findNextMissing(currentRows)
+    const next = findNextMissing(currentRows, skippedRef.current)
     setPendingNow(next)
     if (next) {
       setStatus(`Assistant: ${next.question}`)
@@ -264,24 +280,37 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       try {
         const text = await transcribeAudio(blob)
         setTranscript(prev => (prev ? prev + ' ' : '') + text)
-        const raw = await parseSingleFieldAnswer(currentPending.label ?? currentPending.field, text)
-        const lower = raw.toLowerCase().trim()
+        const lower = text.toLowerCase().trim()
+        const skipKey = `${currentPending.rowIndex}:${currentPending.field}`
 
-        let value = raw
+        // "None / not available" is accepted on the spot, for any field type.
+        if (NA_PATTERN.test(lower)) {
+          if (currentPending.naSafe) {
+            const next = rowsRef.current.map((r, idx) => (idx === currentPending.rowIndex ? { ...r, [currentPending.field]: 'NA' } : r))
+            setRowsNow(next)
+            await askAboutNextMissing(next, 'Marked as not available.')
+          } else {
+            setSkippedNow({ ...skippedRef.current, [skipKey]: true })
+            await askAboutNextMissing(rowsRef.current, 'Marked as not available.')
+          }
+          return
+        }
+
+        let value = null
         if (currentPending.type === 'boolean') {
-          if (/\b(yes|yeah|yep|correct|good|sealed|true)\b/.test(lower)) value = true
-          else if (/\b(no|nope|not\s*good|unsealed|bad|false)\b/.test(lower)) value = false
-          else value = null
-        } else if (currentPending.type === 'enum') {
-          value = currentPending.options?.find(o => lower.includes(o)) ?? null
-        } else if (!raw || !raw.trim()) {
-          value = null
+          // Numbered answers only — 1 = yes, 2 = no. No LLM call needed here.
+          if (/\b1\b|\bone\b/.test(lower)) value = true
+          else if (/\b2\b|\btwo\b/.test(lower)) value = false
+        } else {
+          const raw = await parseSingleFieldAnswer(currentPending.label ?? currentPending.field, text)
+          value = raw && raw.trim() ? raw.trim() : null
         }
 
         if (value === null || value === '') {
-          setStatus(`Didn't catch that clearly — asking again.`)
-          await speak(`Sorry, I didn't quite catch that. ${currentPending.question}`)
-          await beginListening(true)
+          // One attempt only — don't loop back on the same question, just
+          // mark it skipped and move on to whatever's next.
+          setSkippedNow({ ...skippedRef.current, [skipKey]: true })
+          await askAboutNextMissing(rowsRef.current, `Didn't catch that — skipping for now.`)
         } else {
           const storedValue = currentPending.toStored ? currentPending.toStored(value) : value
           const next = rowsRef.current.map((r, idx) => (idx === currentPending.rowIndex ? { ...r, [currentPending.field]: storedValue } : r))
