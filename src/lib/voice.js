@@ -190,6 +190,10 @@ export function unlockSpeech() {
 // Speaks text aloud using the browser's built-in voice engine (no API cost).
 // Picks the softest-sounding female voice available on this device and
 // speaks at a gentle pace and pitch.
+export function stopSpeaking() {
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel()
+}
+
 export async function speak(text) {
   if (!('speechSynthesis' in window)) return
   if (!cachedVoices.length) cachedVoices = await loadVoices()

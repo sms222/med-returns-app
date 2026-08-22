@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../lib/AuthContext'
-import { transcribeAudio, parseTranscriptToMedications, fetchKnownDrugNames, speak, parseSingleFieldAnswer, unlockSpeech } from '../lib/voice'
+import { transcribeAudio, parseTranscriptToMedications, fetchKnownDrugNames, speak, parseSingleFieldAnswer, unlockSpeech, stopSpeaking } from '../lib/voice'
 
 const PACK_TYPES = ['tablet', 'capsule', 'bottle', 'vial', 'blister', 'strip', 'ampoule', 'cartridge', 'sachet', 'box', 'other']
 
@@ -13,12 +13,12 @@ const PACK_TYPES = ['tablet', 'capsule', 'bottle', 'vial', 'blister', 'strip', '
 // Fields backed by a number/date/enum column stay naSafe: false — saying
 // "none" there just marks the field as skipped instead of writing bad data.
 const CORE_FIELDS = [
-  { key: 'quantity_remaining', type: 'number', naSafe: false, label: 'quantity remaining', question: name => `How many are left for ${name}? Say the number, or say none.`, confirm: v => `Saved as ${v}.` },
-  { key: 'pack_type', type: 'text', naSafe: false, label: 'unit of measure (tablet, capsule, bottle, vial, blister, strip, ampoule, cartridge, sachet, or box)', question: name => `What's the unit for ${name} — tablet, strip, bottle, or something else? Or say none.`, confirm: v => `Saved as ${v}.` },
-  { key: 'patient_mrn', type: 'text', naSafe: true, label: 'patient MRN', question: name => `What's the patient's MRN for ${name}? Or say none.`, confirm: v => `Saved as ${v}.` },
-  { key: 'expiry_date', type: 'text', naSafe: false, label: 'expiry date, formatted YYYY-MM-DD', question: name => `What's the expiry date for ${name}? Or say none.`, confirm: v => `Saved as ${v}.` },
-  { key: 'condition_flag', type: 'boolean', naSafe: false, label: 'condition — good or not good', question: name => `Is the condition for ${name} good? Say 1 for yes, 2 for no.`, confirm: v => `Logged as ${v ? 'good' : 'not good'}.`, toStored: v => (v ? 'ok' : 'not_good') },
-  { key: 'sealed', type: 'boolean', naSafe: false, label: 'sealed', question: name => `Is ${name} sealed? Say 1 for yes, 2 for no.`, confirm: v => `Saved as ${v ? 'yes' : 'no'}.` },
+  { key: 'quantity_remaining', type: 'number', naSafe: false, label: 'quantity remaining', question: name => `What is the quantity for ${name}?`, confirm: v => `Saved as ${v}.` },
+  { key: 'pack_type', type: 'text', naSafe: false, label: 'unit of measure (tablet, capsule, bottle, vial, blister, strip, ampoule, cartridge, sachet, or box)', question: name => `What is the UOM for ${name}?`, confirm: v => `Saved as ${v}.` },
+  { key: 'patient_mrn', type: 'text', naSafe: true, label: 'patient MRN', question: name => `What is the patient's MRN for ${name}?`, confirm: v => `Saved as ${v}.` },
+  { key: 'expiry_date', type: 'text', naSafe: false, label: 'expiry date, formatted YYYY-MM-DD', question: name => `What is the expiry date for ${name}?`, confirm: v => `Saved as ${v}.` },
+  { key: 'condition_flag', type: 'boolean', naSafe: false, label: 'condition — good or not good', question: name => `Condition for ${name} — 1 for good, 2 for not good.`, confirm: v => `Logged as ${v ? 'good' : 'not good'}.`, toStored: v => (v ? 'ok' : 'not_good') },
+  { key: 'sealed', type: 'boolean', naSafe: false, label: 'sealed', question: name => `Sealed for ${name} — 1 for yes, 2 for no.`, confirm: v => `Saved as ${v ? 'yes' : 'no'}.` },
 ]
 
 // Recognizes "none" / "not available" style answers so they can be
@@ -92,6 +92,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   const [assistMode, setAssistMode] = useState(false)
   const [pending, setPending] = useState(null) // { rowIndex, field, question } while assistant is waiting for an answer
   const [skippedFields, setSkippedFields] = useState({}) // `${rowIndex}:${field}` -> true, once answered NA or unclear
+  const [speaking, setSpeaking] = useState(false)
   const [hospitals, setHospitals] = useState([])
   const [bins, setBins] = useState([])
   const [hospitalId, setHospitalId] = useState('')
@@ -104,6 +105,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   const rowsRef = useRef(rows)
   const skippedRef = useRef(skippedFields)
   const silenceWatcherRef = useRef(null)
+  const stoppedRef = useRef(false)
 
   // Keep refs in sync so the recorder's onstop callback — which can end up
   // holding a stale closure across several auto-continue cycles — always
@@ -253,23 +255,47 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   }
 
   async function askAboutNextMissing(currentRows, confirmationText) {
+    if (stoppedRef.current) return
     if (confirmationText) {
       setStatus(confirmationText)
+      setSpeaking(true)
       await speak(confirmationText)
+      setSpeaking(false)
     }
+    if (stoppedRef.current) return
     const next = findNextMissing(currentRows, skippedRef.current)
     setPendingNow(next)
     if (next) {
       setStatus(`Assistant: ${next.question}`)
+      setSpeaking(true)
       await speak(next.question)
+      setSpeaking(false)
+      if (stoppedRef.current) return
       await beginListening(true)
     } else {
       setStatus('Everything looks filled in — ready to save.')
+      setSpeaking(true)
       await speak('All set — ready to save.')
+      setSpeaking(false)
     }
   }
 
+  // Interrupts the assistant immediately — stops any TTS mid-sentence and
+  // stops/discards any in-progress recording, without asking the next question.
+  function stopAssistant() {
+    stoppedRef.current = true
+    stopSpeaking()
+    setSpeaking(false)
+    if (recording) stopRecording()
+    setPendingNow(null)
+    setStatus('Stopped.')
+  }
+
   async function handleRecordingStop() {
+    if (stoppedRef.current) {
+      setTranscribing(false)
+      return
+    }
     const blob = new Blob(chunks.current, { type: 'audio/webm' })
     setTranscribing(true)
     const currentPending = pendingRef.current
@@ -452,11 +478,16 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
           </div>
           <button
             className={`mic-btn ${recording ? 'recording' : ''} ${pending ? 'pending' : ''}`}
-            onClick={recording ? stopRecording : beginListening}
+            onClick={() => { if (recording) { stopRecording() } else { stoppedRef.current = false; beginListening() } }}
             disabled={transcribing}
           >
             {recording ? '● Stop' : transcribing ? 'Working…' : pending ? '🎙 Answer' : '🎙 Speak'}
           </button>
+          {(speaking || pending) && (
+            <button className="mic-btn stop-assistant" onClick={stopAssistant} title="Stop the assistant talking">
+              ⏹ Stop
+            </button>
+          )}
         </div>
       </div>
 
