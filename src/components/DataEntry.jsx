@@ -90,6 +90,27 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   const mediaRecorder = useRef(null)
   const chunks = useRef([])
   const knownDrugsRef = useRef(null)
+  const pendingRef = useRef(null)
+  const rowsRef = useRef(rows)
+  const silenceWatcherRef = useRef(null)
+
+  // Keep refs in sync so the recorder's onstop callback — which can end up
+  // holding a stale closure across several auto-continue cycles — always
+  // reads the latest pending question and rows instead of an old snapshot.
+  useEffect(() => { pendingRef.current = pending }, [pending])
+  useEffect(() => { rowsRef.current = rows }, [rows])
+
+  // These update the ref immediately (not waiting for the effect above) so
+  // the very next mic recording — which can start within the same tick —
+  // never reads a one-step-behind value.
+  function setPendingNow(value) {
+    pendingRef.current = value
+    setPending(value)
+  }
+  function setRowsNow(value) {
+    rowsRef.current = value
+    setRows(value)
+  }
 
   useEffect(() => {
     fetchKnownDrugNames().then(names => { knownDrugsRef.current = names })
@@ -131,7 +152,64 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
     })
   }, [bagId])
 
-  async function beginListening() {
+  // Watches mic input volume and auto-stops recording after a period of
+  // silence, so answering a follow-up question doesn't need a manual tap.
+  function watchForSilence(stream, mr) {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext
+    if (!AudioCtx) return
+    const audioCtx = new AudioCtx()
+    const source = audioCtx.createMediaStreamSource(stream)
+    const analyser = audioCtx.createAnalyser()
+    analyser.fftSize = 512
+    source.connect(analyser)
+    const data = new Uint8Array(analyser.frequencyBinCount)
+
+    const SILENCE_RMS_THRESHOLD = 6
+    const SILENCE_DURATION_MS = 1300
+    const MIN_RECORDING_MS = 500
+    const MAX_RECORDING_MS = 20000
+    const startedAt = Date.now()
+    let silenceStartedAt = null
+
+    function tick() {
+      if (mr.state !== 'recording') {
+        audioCtx.close().catch(() => {})
+        return
+      }
+      analyser.getByteTimeDomainData(data)
+      let sumSquares = 0
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128
+        sumSquares += v * v
+      }
+      const rms = Math.sqrt(sumSquares / data.length) * 100
+      const elapsed = Date.now() - startedAt
+
+      if (elapsed > MIN_RECORDING_MS) {
+        if (rms < SILENCE_RMS_THRESHOLD) {
+          if (silenceStartedAt === null) silenceStartedAt = Date.now()
+          if (Date.now() - silenceStartedAt > SILENCE_DURATION_MS) {
+            audioCtx.close().catch(() => {})
+            stopRecording()
+            return
+          }
+        } else {
+          silenceStartedAt = null
+        }
+      }
+
+      if (elapsed > MAX_RECORDING_MS) {
+        audioCtx.close().catch(() => {})
+        stopRecording()
+        return
+      }
+
+      silenceWatcherRef.current = requestAnimationFrame(tick)
+    }
+    silenceWatcherRef.current = requestAnimationFrame(tick)
+  }
+
+  async function beginListening(autoStop = false) {
     try {
       unlockSpeech()
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -142,12 +220,17 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       mr.start()
       mediaRecorder.current = mr
       setRecording(true)
+      if (autoStop) watchForSilence(stream, mr)
     } catch (err) {
       console.warn('Could not auto-start listening — tap the mic to answer.', err)
     }
   }
 
   function stopRecording() {
+    if (silenceWatcherRef.current) {
+      cancelAnimationFrame(silenceWatcherRef.current)
+      silenceWatcherRef.current = null
+    }
     mediaRecorder.current?.stop()
     mediaRecorder.current?.stream.getTracks().forEach(t => t.stop())
     setRecording(false)
@@ -159,11 +242,11 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       await speak(confirmationText)
     }
     const next = findNextMissing(currentRows)
-    setPending(next)
+    setPendingNow(next)
     if (next) {
       setStatus(`Assistant: ${next.question}`)
       await speak(next.question)
-      await beginListening()
+      await beginListening(true)
     } else {
       setStatus('Everything looks filled in — ready to save.')
       await speak('All set — ready to save.')
@@ -173,36 +256,37 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   async function handleRecordingStop() {
     const blob = new Blob(chunks.current, { type: 'audio/webm' })
     setTranscribing(true)
+    const currentPending = pendingRef.current
 
     // Answering a follow-up question from the assistant.
-    if (pending) {
+    if (currentPending) {
       setStatus('Listening for your answer…')
       try {
         const text = await transcribeAudio(blob)
         setTranscript(prev => (prev ? prev + ' ' : '') + text)
-        const raw = await parseSingleFieldAnswer(pending.label ?? pending.field, text)
+        const raw = await parseSingleFieldAnswer(currentPending.label ?? currentPending.field, text)
         const lower = raw.toLowerCase().trim()
 
         let value = raw
-        if (pending.type === 'boolean') {
+        if (currentPending.type === 'boolean') {
           if (/\b(yes|yeah|yep|correct|good|sealed|true)\b/.test(lower)) value = true
           else if (/\b(no|nope|not\s*good|unsealed|bad|false)\b/.test(lower)) value = false
           else value = null
-        } else if (pending.type === 'enum') {
-          value = pending.options?.find(o => lower.includes(o)) ?? null
+        } else if (currentPending.type === 'enum') {
+          value = currentPending.options?.find(o => lower.includes(o)) ?? null
         } else if (!raw || !raw.trim()) {
           value = null
         }
 
         if (value === null || value === '') {
           setStatus(`Didn't catch that clearly — asking again.`)
-          await speak(`Sorry, I didn't quite catch that. ${pending.question}`)
-          await beginListening()
+          await speak(`Sorry, I didn't quite catch that. ${currentPending.question}`)
+          await beginListening(true)
         } else {
-          const storedValue = pending.toStored ? pending.toStored(value) : value
-          const next = rows.map((r, idx) => (idx === pending.rowIndex ? { ...r, [pending.field]: storedValue } : r))
-          setRows(next)
-          const confirmText = pending.confirm ? pending.confirm(value) : `Saved as ${value}.`
+          const storedValue = currentPending.toStored ? currentPending.toStored(value) : value
+          const next = rowsRef.current.map((r, idx) => (idx === currentPending.rowIndex ? { ...r, [currentPending.field]: storedValue } : r))
+          setRowsNow(next)
+          const confirmText = currentPending.confirm ? currentPending.confirm(value) : `Saved as ${value}.`
           await askAboutNextMissing(next, confirmText)
         }
       } catch (err) {
@@ -221,12 +305,12 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       setTranscript(prev => (prev ? prev + ' ' : '') + text)
       setStatus('Parsing into fields…')
       const meds = await parseTranscriptToMedications(text, knownDrugsRef.current ?? [])
-      let updatedRows = rows
+      let updatedRows = rowsRef.current
       if (meds.length) {
-        updatedRows = (rows.length === 1 && !rows[0].drug_name ? [] : rows).concat(
+        updatedRows = (rowsRef.current.length === 1 && !rowsRef.current[0].drug_name ? [] : rowsRef.current).concat(
           meds.map(m => ({ ...emptyRow(), ...m }))
         )
-        setRows(updatedRows)
+        setRowsNow(updatedRows)
       }
       if (assistMode) {
         await askAboutNextMissing(updatedRows)
@@ -242,17 +326,17 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
   }
 
   function updateRow(i, field, value) {
-    setRows(rows.map((r, idx) => (idx === i ? { ...r, [field]: value } : r)))
+    setRowsNow(rows.map((r, idx) => (idx === i ? { ...r, [field]: value } : r)))
   }
 
   function addRow() {
-    setRows([...rows, emptyRow()])
+    setRowsNow([...rows, emptyRow()])
   }
 
   function removeRow(i) {
     const row = rows[i]
     if (row.id) setDeletedRowIds(prev => [...prev, row.id])
-    setRows(rows.filter((_, idx) => idx !== i))
+    setRowsNow(rows.filter((_, idx) => idx !== i))
   }
 
   function handlePhoto(e) {
