@@ -15,8 +15,10 @@ async function transcribeWithGroq(audioBlob) {
   form.append('language', 'en')
   // Nudge the model toward the vocabulary it'll actually hear. Explicitly
   // spelling out "lot number" here matters — without it Whisper tends to
-  // mishear staff saying "lot number" as "log number".
-  form.append('prompt', 'Medication return log: drug names, brand names, mg strengths, patient MRN, patient name, dispensed date, expiry date, lot number, batch number, quantity remaining, condition, label attached, sealed.')
+  // mishear staff saying "lot number" as "log number". The example code
+  // primes it to expect short alphanumeric batch/lot codes (letters mixed
+  // with digits) instead of mishearing spelled-out letters as words.
+  form.append('prompt', 'Medication return log: drug names, brand names, mg strengths, patient MRN, patient name, dispensed date, expiry date, lot number, batch number (e.g. 69PW0, A12345), quantity remaining, condition, label attached, sealed.')
 
   const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
     method: 'POST',
@@ -126,7 +128,10 @@ export async function parseTranscriptToMedications(transcript, knownDrugs = []) 
             `returned medication(s) found in one patient bag. Return ONLY valid JSON: ` +
             `{"medications": [${FIELD_SCHEMA}, ...]}. One object per distinct medication ` +
             `mentioned. Leave a field null if not stated — never invent values. ` +
-            `Convert spoken dates to YYYY-MM-DD using reasonable assumptions. ` +
+            `Convert spoken dates to YYYY-MM-DD using reasonable assumptions. If only a month ` +
+            `and year are given for expiry_date (no specific day — e.g. packaging that just says ` +
+            `"02/27" or "February 2027"), use the LAST day of that month, since that's how ` +
+            `pharmacy expiry dates are normally read. ` +
             `IMPORTANT: quantity_remaining is ONLY the bare number of units left. ` +
             `pack_type is the unit of measure describing what that number counts (tablet, ` +
             `capsule, bottle, vial, blister, strip, ampoule, cartridge, sachet, box). For ` +
@@ -236,8 +241,11 @@ export async function parseSingleFieldAnswer(fieldLabel, transcript) {
           content:
             `Extract only the value for "${fieldLabel}" from the person's short spoken answer. ` +
             `Reply with ONLY the value as plain text, nothing else — no labels, no punctuation ` +
-            `around it. If it's a date, format as YYYY-MM-DD. If the answer doesn't actually ` +
-            `contain this value, reply with an empty string.`,
+            `around it. If it's a date, format as YYYY-MM-DD — if only a month and year are ` +
+            `given (no specific day), use the LAST day of that month. If it's a batch or lot ` +
+            `number spoken as individual digits/letters, combine them into one compact ` +
+            `alphanumeric code with no spaces (e.g. "six nine papa whiskey zero" becomes ` +
+            `"69PW0"). If the answer doesn't actually contain this value, reply with an empty string.`,
         },
         { role: 'user', content: transcript },
       ],

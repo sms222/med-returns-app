@@ -23,7 +23,17 @@ const CORE_FIELDS = [
   { key: 'condition_flag', type: 'boolean', naSafe: false, label: 'condition — good or not good', question: name => `Condition for ${name} — 1 for good, 2 for not good.`, confirm: v => `Logged as ${v ? 'good' : 'not good'}.`, toStored: v => (v ? 'ok' : 'not_good') },
   { key: 'label_attached', type: 'boolean', naSafe: false, label: 'label attached', question: name => `Label attached for ${name} — 1 for yes, 2 for no.`, confirm: v => `Saved as ${v ? 'yes' : 'no'}.` },
   { key: 'sealed', type: 'boolean', naSafe: false, label: 'sealed', question: name => `Sealed for ${name} — 1 for yes, 2 for no.`, confirm: v => `Saved as ${v ? 'yes' : 'no'}.` },
+  { key: 'disposition', type: 'choice', naSafe: false, label: 'action — reclaim or dispose', question: name => `Action for ${name} — 1 for reclaim, 2 for dispose.`, confirm: v => `Saved as ${v}.`, options: [{ num: 1, value: 'reclaim' }, { num: 2, value: 'dispose' }] },
+  { key: 'source_clinic', type: 'text', naSafe: true, label: 'source clinic, only if different from this bin\'s usual collection point', question: name => `What is the source clinic for ${name}?`, confirm: v => `Saved as ${v}.` },
 ]
+
+// Matches a spoken number, accepting common Whisper mishearings
+// ("to"/"too" for "two").
+function matchesNumber(lower, n) {
+  if (n === 1) return /\b1\b|\bone\b/.test(lower)
+  if (n === 2) return /\b2\b|\btwo\b|\bto\b|\btoo\b/.test(lower)
+  return false
+}
 
 // Recognizes "none" / "not available" style answers so they can be
 // accepted immediately instead of triggering a re-ask.
@@ -323,36 +333,37 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
         appendTranscript('You', text)
         const lower = text.toLowerCase().trim()
         const skipKey = `${currentPending.rowIndex}:${currentPending.field}`
+        const isNA = NA_PATTERN.test(lower)
 
-        // "None / not available" is accepted on the spot, for any field type.
-        if (NA_PATTERN.test(lower)) {
+        let value = null
+        if (!isNA) {
+          if (currentPending.type === 'boolean') {
+            // Numbered answers only — 1 = yes, 2 = no. No LLM call needed here.
+            if (matchesNumber(lower, 1)) value = true
+            else if (matchesNumber(lower, 2)) value = false
+          } else if (currentPending.type === 'choice') {
+            const match = currentPending.options.find(o => matchesNumber(lower, o.num))
+            value = match ? match.value : null
+          } else {
+            const raw = await parseSingleFieldAnswer(currentPending.label ?? currentPending.field, text)
+            value = raw && raw.trim() ? raw.trim() : null
+          }
+        }
+
+        if (isNA || value === null || value === '') {
+          // Unanswered/unclear on a field that's safe to hold free text
+          // (MRN, patient name, batch/lot, clinic) — write "NA" rather than
+          // leaving it silently blank, whether they said "none" or the
+          // answer just wasn't understood. One attempt only either way —
+          // no re-asking the same question.
           if (currentPending.naSafe) {
             const next = rowsRef.current.map((r, idx) => (idx === currentPending.rowIndex ? { ...r, [currentPending.field]: 'NA' } : r))
             setRowsNow(next)
-            await askAboutNextMissing(next, 'Marked as not available.')
+            await askAboutNextMissing(next, 'Marked as NA.')
           } else {
             setSkippedNow({ ...skippedRef.current, [skipKey]: true })
-            await askAboutNextMissing(rowsRef.current, 'Marked as not available.')
+            await askAboutNextMissing(rowsRef.current, isNA ? 'Marked as not available.' : `Didn't catch that — skipping for now.`)
           }
-          return
-        }
-
-        let value = null
-        if (currentPending.type === 'boolean') {
-          // Numbered answers only — 1 = yes, 2 = no. No LLM call needed here.
-          // "to"/"too" are common Whisper mishearings of "two", accepted too.
-          if (/\b1\b|\bone\b/.test(lower)) value = true
-          else if (/\b2\b|\btwo\b|\bto\b|\btoo\b/.test(lower)) value = false
-        } else {
-          const raw = await parseSingleFieldAnswer(currentPending.label ?? currentPending.field, text)
-          value = raw && raw.trim() ? raw.trim() : null
-        }
-
-        if (value === null || value === '') {
-          // One attempt only — don't loop back on the same question, just
-          // mark it skipped and move on to whatever's next.
-          setSkippedNow({ ...skippedRef.current, [skipKey]: true })
-          await askAboutNextMissing(rowsRef.current, `Didn't catch that — skipping for now.`)
         } else {
           const storedValue = currentPending.toStored ? currentPending.toStored(value) : value
           const next = rowsRef.current.map((r, idx) => (idx === currentPending.rowIndex ? { ...r, [currentPending.field]: storedValue } : r))
