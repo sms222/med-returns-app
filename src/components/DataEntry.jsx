@@ -13,8 +13,8 @@ const PACK_TYPES = ['tablet', 'capsule', 'bottle', 'vial', 'blister', 'strip', '
 // Fields backed by a number/date/enum column stay naSafe: false — saying
 // "none" there just marks the field as skipped instead of writing bad data.
 const CORE_FIELDS = [
-  { key: 'quantity_remaining', type: 'number', naSafe: false, label: 'quantity remaining', question: name => `What is the quantity for ${name}?`, confirm: v => `Saved as ${v}.` },
   { key: 'pack_type', type: 'text', naSafe: false, label: 'unit of measure (tablet, capsule, bottle, vial, blister, strip, ampoule, cartridge, sachet, or box)', question: name => `What is the UOM for ${name}?`, confirm: v => `Saved as ${v}.` },
+  { key: 'quantity_remaining', type: 'number', naSafe: false, label: 'quantity remaining', question: name => `What is the quantity for ${name}?`, confirm: v => `Saved as ${v}.` },
   { key: 'patient_mrn', type: 'text', naSafe: true, label: 'patient MRN', question: name => `What is the patient's MRN for ${name}?`, confirm: v => `Saved as ${v}.` },
   { key: 'expiry_date', type: 'text', naSafe: false, label: 'expiry date, formatted YYYY-MM-DD', question: name => `What is the expiry date for ${name}?`, confirm: v => `Saved as ${v}.` },
   { key: 'condition_flag', type: 'boolean', naSafe: false, label: 'condition — good or not good', question: name => `Condition for ${name} — 1 for good, 2 for not good.`, confirm: v => `Logged as ${v ? 'good' : 'not good'}.`, toStored: v => (v ? 'ok' : 'not_good') },
@@ -188,6 +188,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
     const MAX_RECORDING_MS = 20000
     const startedAt = Date.now()
     let silenceStartedAt = null
+    let hasSpoken = false // don't start the silence countdown until real speech is heard
 
     function tick() {
       if (mr.state !== 'recording') {
@@ -203,16 +204,15 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       const rms = Math.sqrt(sumSquares / data.length) * 100
       const elapsed = Date.now() - startedAt
 
-      if (elapsed > MIN_RECORDING_MS) {
-        if (rms < SILENCE_RMS_THRESHOLD) {
-          if (silenceStartedAt === null) silenceStartedAt = Date.now()
-          if (Date.now() - silenceStartedAt > SILENCE_DURATION_MS) {
-            audioCtx.close().catch(() => {})
-            stopRecording()
-            return
-          }
-        } else {
-          silenceStartedAt = null
+      if (rms >= SILENCE_RMS_THRESHOLD) {
+        hasSpoken = true
+        silenceStartedAt = null
+      } else if (hasSpoken && elapsed > MIN_RECORDING_MS) {
+        if (silenceStartedAt === null) silenceStartedAt = Date.now()
+        if (Date.now() - silenceStartedAt > SILENCE_DURATION_MS) {
+          audioCtx.close().catch(() => {})
+          stopRecording()
+          return
         }
       }
 
