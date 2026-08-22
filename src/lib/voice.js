@@ -13,8 +13,10 @@ async function transcribeWithGroq(audioBlob) {
   form.append('file', audioBlob, 'audio.webm')
   form.append('model', 'whisper-large-v3')
   form.append('language', 'en')
-  // Nudge the model toward the vocabulary it'll actually hear.
-  form.append('prompt', 'Medication return log: drug names, brand names, mg strengths, MRN, batch numbers, expiry dates.')
+  // Nudge the model toward the vocabulary it'll actually hear. Explicitly
+  // spelling out "lot number" here matters — without it Whisper tends to
+  // mishear staff saying "lot number" as "log number".
+  form.append('prompt', 'Medication return log: drug names, brand names, mg strengths, patient MRN, patient name, dispensed date, expiry date, lot number, batch number, quantity remaining, condition, label attached, sealed.')
 
   const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
     method: 'POST',
@@ -136,8 +138,8 @@ export async function parseTranscriptToMedications(transcript, knownDrugs = []) 
             `leave null if not mentioned. disposition is "reclaim" if the medication will be put ` +
             `back into stock/use, "dispose" if it will be destroyed/wasted — only set if stated. ` +
             `source_clinic is only for a clinic or location different from where this bin normally ` +
-            `collects, if mentioned. Put any detail mentioned that doesn't fit another field into ` +
-            `"notes".` +
+            `collects, if mentioned. Staff may say "lot number" — treat this the same as batch_number. ` +
+            `Put any detail mentioned that doesn't fit another field into "notes".` +
             knownDrugsNote,
         },
         { role: 'user', content: transcript },

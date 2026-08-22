@@ -16,8 +16,12 @@ const CORE_FIELDS = [
   { key: 'pack_type', type: 'text', naSafe: false, label: 'unit of measure (tablet, capsule, bottle, vial, blister, strip, ampoule, cartridge, sachet, or box)', question: name => `What is the UOM for ${name}?`, confirm: v => `Saved as ${v}.` },
   { key: 'quantity_remaining', type: 'number', naSafe: false, label: 'quantity remaining', question: name => `What is the quantity for ${name}?`, confirm: v => `Saved as ${v}.` },
   { key: 'patient_mrn', type: 'text', naSafe: true, label: 'patient MRN', question: name => `What is the patient's MRN for ${name}?`, confirm: v => `Saved as ${v}.` },
+  { key: 'patient_name', type: 'text', naSafe: true, label: 'patient name', question: name => `What is the patient's name for ${name}?`, confirm: v => `Saved as ${v}.` },
+  { key: 'dispensed_date', type: 'text', naSafe: false, label: 'dispensed date, formatted YYYY-MM-DD', question: name => `What is the dispensed date for ${name}?`, confirm: v => `Saved as ${v}.` },
   { key: 'expiry_date', type: 'text', naSafe: false, label: 'expiry date, formatted YYYY-MM-DD', question: name => `What is the expiry date for ${name}?`, confirm: v => `Saved as ${v}.` },
+  { key: 'batch_number', type: 'text', naSafe: true, label: 'batch or lot number', question: name => `What is the Batch or Lot number for ${name}?`, confirm: v => `Saved as ${v}.` },
   { key: 'condition_flag', type: 'boolean', naSafe: false, label: 'condition — good or not good', question: name => `Condition for ${name} — 1 for good, 2 for not good.`, confirm: v => `Logged as ${v ? 'good' : 'not good'}.`, toStored: v => (v ? 'ok' : 'not_good') },
+  { key: 'label_attached', type: 'boolean', naSafe: false, label: 'label attached', question: name => `Label attached for ${name} — 1 for yes, 2 for no.`, confirm: v => `Saved as ${v ? 'yes' : 'no'}.` },
   { key: 'sealed', type: 'boolean', naSafe: false, label: 'sealed', question: name => `Sealed for ${name} — 1 for yes, 2 for no.`, confirm: v => `Saved as ${v ? 'yes' : 'no'}.` },
 ]
 
@@ -254,10 +258,19 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
     setRecording(false)
   }
 
+  // Appends a labeled line to the visible transcript so it reads as a full
+  // conversation log (both what the assistant asked/said and what the
+  // person answered), not just the person's side.
+  function appendTranscript(speaker, text) {
+    if (!text || !text.trim()) return
+    setTranscript(prev => (prev ? prev + '\n' : '') + `${speaker}: ${text.trim()}`)
+  }
+
   async function askAboutNextMissing(currentRows, confirmationText) {
     if (stoppedRef.current) return
     if (confirmationText) {
       setStatus(confirmationText)
+      appendTranscript('Assistant', confirmationText)
       setSpeaking(true)
       await speak(confirmationText)
       setSpeaking(false)
@@ -267,6 +280,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
     setPendingNow(next)
     if (next) {
       setStatus(`Assistant: ${next.question}`)
+      appendTranscript('Assistant', next.question)
       setSpeaking(true)
       await speak(next.question)
       setSpeaking(false)
@@ -274,6 +288,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       await beginListening(true)
     } else {
       setStatus('Everything looks filled in — ready to save.')
+      appendTranscript('Assistant', 'All set — ready to save.')
       setSpeaking(true)
       await speak('All set — ready to save.')
       setSpeaking(false)
@@ -305,7 +320,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
       setStatus('Listening for your answer…')
       try {
         const text = await transcribeAudio(blob)
-        setTranscript(prev => (prev ? prev + ' ' : '') + text)
+        appendTranscript('You', text)
         const lower = text.toLowerCase().trim()
         const skipKey = `${currentPending.rowIndex}:${currentPending.field}`
 
@@ -325,8 +340,9 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
         let value = null
         if (currentPending.type === 'boolean') {
           // Numbered answers only — 1 = yes, 2 = no. No LLM call needed here.
+          // "to"/"too" are common Whisper mishearings of "two", accepted too.
           if (/\b1\b|\bone\b/.test(lower)) value = true
-          else if (/\b2\b|\btwo\b/.test(lower)) value = false
+          else if (/\b2\b|\btwo\b|\bto\b|\btoo\b/.test(lower)) value = false
         } else {
           const raw = await parseSingleFieldAnswer(currentPending.label ?? currentPending.field, text)
           value = raw && raw.trim() ? raw.trim() : null
@@ -357,7 +373,7 @@ export default function DataEntry({ bagId, onSaved, onCancel }) {
     setStatus('Transcribing…')
     try {
       const text = await transcribeAudio(blob)
-      setTranscript(prev => (prev ? prev + ' ' : '') + text)
+      appendTranscript('You', text)
       setStatus('Parsing into fields…')
       const meds = await parseTranscriptToMedications(text, knownDrugsRef.current ?? [])
       let updatedRows = rowsRef.current
